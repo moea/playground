@@ -248,8 +248,7 @@
           (cond
             (integer? literal) (bc/make-type-constraint var :int)
             (string? literal) (bc/make-type-constraint var :string)
-            (boolean? literal) (bc/make-type-constraint var 
-                                 (if literal :true :false))
+            (boolean? literal) (bc/make-type-constraint var :bool)
             :else nil))
             
         ;; Check for literal comparison with a variable
@@ -260,8 +259,7 @@
           (cond
             (integer? literal) (bc/make-type-constraint var :int)
             (string? literal) (bc/make-type-constraint var :string)
-            (boolean? literal) (bc/make-type-constraint var 
-                                 (if literal :true :false))
+            (boolean? literal) (bc/make-type-constraint var :bool)
             :else nil))
             
         :else nil))
@@ -336,8 +334,6 @@
                         :int int-type
                         :string string-type
                         :bool bool-type
-                        :false false  ;; Special case for false value
-                        :true true    ;; Special case for true value
                         type)]
       
       ;; Handle it differently based on what's in the set
@@ -346,11 +342,9 @@
           ;; Positive constraint - keep only matching types
           (let [types (:types curr-type)
                 result-types (case target-type
-                              :int    (filter #(or (= % int-type) (integer? %)) types)
-                              :string (filter #(or (= % string-type) (string? %)) types)
-                              :bool   (filter #(or (= % bool-type) (instance? Boolean %)) types)
-                              false   (filter #(= % false) types)
-                              true    (filter #(= % true) types)
+                              :int    (filter #(= % int-type) types)
+                              :string (filter #(= % string-type) types)
+                              :bool   (filter #(= % bool-type) types)
                               ;; Default
                               (filter #(= % target-type) types))]
             (if (empty? result-types)
@@ -361,11 +355,9 @@
           ;; Negative constraint - remove matching types
           (let [types (:types curr-type)
                 result-types (case target-type
-                               :int    (remove #(or (= % int-type) (integer? %)) types)
-                               :string (remove #(or (= % string-type) (string? %)) types)
-                               :bool   (remove #(or (= % bool-type) (instance? Boolean %)) types)
-                               false   (remove #(= % false) types)
-                               true    (remove #(= % true) types)
+                               :int    (remove #(= % int-type) types)
+                               :string (remove #(= % string-type) types)
+                               :bool   (remove #(= % bool-type) types)
                                ;; Default
                                (remove #(= % target-type) types))]
             (if (empty? result-types) 
@@ -402,9 +394,8 @@
 ;; Apply boolean formula to refine environment
 (defn apply-formula [env formula positive?]
   (cond
-    ;; Boolean constants
-    (= formula true)  env
-    (= formula false) env
+    ;; Boolean constants - no-op
+    (or (= formula true) (= formula false)) env
 
     ;; Single predicate
     (type-predicate? formula)
@@ -481,6 +472,9 @@
 
     ;; String literal
     (string? expr) string-type
+    
+    ;; Direct type keyword - handle types passed directly in tests
+    (keyword? expr) expr
 
     ;; Variable reference
     (symbol? expr) (if-let [t (get env expr)]
