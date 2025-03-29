@@ -17,11 +17,10 @@ concurrency:
   group: "pages"
   cancel-in-progress: true
 
-defaults:
-  run:
-    working-directory: pages
-
 jobs:
+  defaults:
+    run:
+      working-directory: pages
   build:
     runs-on: ubuntu-latest
     steps:
