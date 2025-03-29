@@ -125,7 +125,7 @@
   (or (= t bool-type)
       (and (map? t) (= (:type t) :union) (contains? (:types t) bool-type))))
 
-;;; ---- Core.Logic Constraint Solving ----
+;;; ---- Constraint System ----
 
 ;; Define type predicates
 (def predicate-type-map
@@ -137,7 +137,10 @@
 (defn init-env []
   (merge
     {'string-length (function-type string-type int-type)
-     '= (function-type any-type bool-type)}
+     '= (function-type any-type bool-type)
+     'and (function-type bool-type bool-type)
+     'or (function-type bool-type bool-type)
+     'not (function-type bool-type bool-type)}
     ;; Add predicates to environment as functions
     (reduce-kv (fn [env pred-name type]
                  (assoc env
@@ -146,293 +149,245 @@
                {}
                predicate-type-map)))
 
-;; Use core.logic to solve path constraints
-(defn solve-path-constraints [env type-constraints]
-  (if (empty? type-constraints)
-    env
-    (let [;; Extract variables and types from constraints
-          vars (map :var type-constraints)
-          types (map :type type-constraints)
+;;; ---- Boolean Formula Representation ----
 
-          ;; Apply each constraint sequentially to refine types
-          refined-env (reduce (fn [curr-env idx]
-                                (let [var (nth vars idx)
-                                      curr-type (get curr-env var)
-                                      constraint-type (nth types idx)]
-                                  (if curr-type
-                                    ;; Refine the type with intersection
-                                    (let [refined-type (intersect-types curr-type constraint-type)]
-                                      (if (= refined-type bottom-type)
-                                        ;; If bottom type, constraint can't be satisfied
-                                        curr-env
-                                        ;; Otherwise update the environment
-                                        (assoc curr-env var refined-type)))
-                                    ;; If variable not in environment, keep env unchanged
-                                    curr-env)))
-                              env
-                              (range (count vars)))]
-      refined-env)))
+;; Data types for boolean formula
+(defrecord TypePredicate [var type])
+(defrecord And [clauses])
+(defrecord Or [clauses])
+(defrecord Not [formula])
 
-;; Solve negated path constraints
-(defn solve-negated-constraints [env type-constraints]
-  (if (empty? type-constraints)
-    env
-    (let [;; Create negated constraints by computing type difference
-          negated-constraints
-          (filter identity
-                  (map (fn [c]
-                         (let [var (:var c)
-                               curr-type (get env var)
-                               constraint-type (:type c)]
-                           (when curr-type
-                             {:var var
-                              :type (type-difference curr-type constraint-type)})))
-                       type-constraints))]
-      ;; Apply the negated constraints
-      (solve-path-constraints env negated-constraints))))
+;; Smart constructors that perform simplification
+(defn make-pred [var type]
+  (->TypePredicate var type))
 
-;;; ---- Macros and Expansion ----
+(defn make-and [& clauses]
+  (let [flattened (mapcat (fn [c]
+                            (if (instance? And c)
+                              (:clauses c)
+                              [c]))
+                          (remove nil? clauses))
+        filtered (filter #(not= % true) flattened)]
+    (cond
+      (some #(= % false) filtered) false
+      (empty? filtered) true
+      (= (count filtered) 1) (first filtered)
+      :else (->And (vec filtered)))))
 
-;; Macros for boolean operations
-(def macros
-  {'and (fn [& args]
-          (if (empty? args)
-            true
-            (if (= (count args) 1)
-              (first args)
-              (list 'if (first args)
-                    (apply (get macros 'and) (rest args))
-                    false))))
-   'or  (fn [& args]
-          (if (empty? args)
-            false
-            (if (= (count args) 1)
-              (first args)
-              (list 'if (first args)
-                    true
-                    (apply (get macros 'or) (rest args))))))
-   'not (fn [x] (list 'if x false true))})
+(defn make-or [& clauses]
+  (let [flattened (mapcat (fn [c]
+                            (if (instance? Or c)
+                              (:clauses c)
+                              [c]))
+                          (remove nil? clauses))
+        filtered (filter #(not= % false) flattened)]
+    (cond
+      (some #(= % true) filtered) true
+      (empty? filtered) false
+      (= (count filtered) 1) (first filtered)
+      :else (->Or (vec filtered)))))
 
-;; Simple macroexpander
-(defn expand-1 [form]
-  (if (and (seq? form) (symbol? (first form)))
-    (let [macro-fn (get macros (first form))]
-      (if macro-fn
-        (apply macro-fn (rest form))
-        form))
-    form))
+(defn make-not [formula]
+  (cond
+    ;; Double negation elimination
+    (instance? Not formula)
+    (:formula formula)
 
-;; Full recursive macroexpansion
-(defn expand-all [form]
-  (let [expanded (expand-1 form)]
-    (if (= expanded form)
-      (if (seq? form)
-        (apply list (map expand-all form))
-        form)
-      (expand-all expanded))))
+    ;; De Morgan's laws
+    (instance? And formula)
+    (apply make-or (map make-not (:clauses formula)))
 
-;;; ---- Constraint Extraction ----
+    (instance? Or formula)
+    (apply make-and (map make-not (:clauses formula)))
 
-;; Extract type predicates
+    ;; Boolean literals
+    (= formula true) false
+    (= formula false) true
+
+    ;; Otherwise just wrap in Not
+    :else (->Not formula)))
+
+;; Convert formula to Negation Normal Form (negations only around predicates)
+(defn to-nnf [formula]
+  (cond
+    ;; Literals pass through
+    (or (true? formula) (false? formula) (instance? TypePredicate formula))
+    formula
+
+    ;; Push negation down
+    (instance? Not formula)
+    (let [inner (:formula formula)]
+      (cond
+        ;; Double negation elimination
+        (instance? Not inner)
+        (to-nnf (:formula inner))
+
+        ;; De Morgan's laws
+        (instance? And inner)
+        (apply make-or (map (comp to-nnf make-not) (:clauses inner)))
+
+        (instance? Or inner)
+        (apply make-and (map (comp to-nnf make-not) (:clauses inner)))
+
+        ;; Negate a predicate
+        (instance? TypePredicate inner)
+        (->Not (to-nnf inner))
+
+        ;; Constants
+        (= inner true) false
+        (= inner false) true
+
+        :else (->Not (to-nnf inner))))
+
+    ;; Recursive NNF transformation
+    (instance? And formula)
+    (apply make-and (map to-nnf (:clauses formula)))
+
+    (instance? Or formula)
+    (apply make-or (map to-nnf (:clauses formula)))
+
+    :else formula))
+
+;;; ---- Extract Constraints From Expressions ----
+
+;; Extract a predicate from an expression
 (defn extract-predicate [expr]
   (when (and (seq? expr) (symbol? (first expr)))
     (when-let [type (get predicate-type-map (first expr))]
       (when (= (count expr) 2)
-        {:var (second expr) :type type}))))
+        (make-pred (second expr) type)))))
 
-;; Extract constraints from expressions for core.logic
-(defn extract-constraints [expr]
+;; Extract boolean formula from expression
+(defn extract-formula [expr]
   (cond
     ;; Literal values - no constraints
     (or (integer? expr) (string? expr) (boolean? expr))
-    []
+    nil
 
     ;; Variable reference - no constraints
     (symbol? expr)
-    []
+    nil
 
     ;; Sequence expressions
     (seq? expr)
-    (case (first expr)
-      ;; Direct 'not' application to predicate
-      not (if-let [pred (extract-predicate (second expr))]
-            [{:op :not :var (:var pred) :type (:type pred)}]
-            ;; Recursively extract from the inner expression
-            (let [inner-constraints (extract-constraints (second expr))]
-              ;; Negate each constraint
-              (mapv (fn [c] 
-                      (case (:op c)
-                        :is {:op :not :var (:var c) :type (:type c)}
-                        :not {:op :is :var (:var c) :type (:type c)}
-                        ;; For complex constraints, let the boolean solver handle them
-                        c))
-                    inner-constraints)))
+    (let [op   (first expr)
+          args (rest expr)]
+      (case op
+        ;; Boolean operations
+        not (when-let [inner (extract-formula (first args))]
+              (make-not inner))
 
-      ;; 'and' expression
-      and (let [inner-constraints (mapcat extract-constraints (rest expr))]
-            (if (> (count inner-constraints) 1)
-              [{:op :and :constraints inner-constraints}]
-              inner-constraints))
+        and (let [inner-formulas (keep extract-formula args)]
+              (if (seq inner-formulas)
+                (apply make-and inner-formulas)
+                nil))
 
-      ;; 'or' expression
-      or (let [inner-constraints (mapcat extract-constraints (rest expr))]
-           (if (> (count inner-constraints) 1)
-             [{:op :or :constraints inner-constraints}]
-             inner-constraints))
+        or (let [inner-formulas (keep extract-formula args)]
+             (if (seq inner-formulas)
+               (apply make-or inner-formulas)
+               nil))
 
-      ;; If expression with special pattern for negation
-      if (if (and (= (count expr) 4)
-                (= (nth expr 2) false)
-                (= (nth expr 3) true))
-           ;; This is (if X false true) which is equivalent to (not X)
-           (let [condition (second expr)
-                 pred (extract-predicate condition)]
-             (if pred
-               [{:op :not :var (:var pred) :type (:type pred)}]
-               ;; Recursively extract and negate
-               (let [inner-constraints (extract-constraints condition)]
-                 (mapv (fn [c] 
-                         (case (:op c)
-                           :is {:op :not :var (:var c) :type (:type c)}
-                           :not {:op :is :var (:var c) :type (:type c)}
-                           c))
-                       inner-constraints))))
-           ;; Normal if - just extract from condition
-           (extract-constraints (second expr)))
+        ;; If expression - extract from condition
+        if (extract-formula (first args))
 
-      ;; Type predicate
-      (if-let [pred (extract-predicate expr)]
-        [{:op :is :var (:var pred) :type (:type pred)}]
-
-        ;; Other expressions
-        (mapcat extract-constraints (rest expr))))
+        ;; Type predicate
+        (if-let [pred (extract-predicate expr)]
+          pred
+          ;; Other expressions - try args recursively
+          (let [inner-formulas (keep extract-formula args)]
+            (if (= (count inner-formulas) 1)
+              (first inner-formulas)
+              (when (seq inner-formulas)
+                (apply make-and inner-formulas)))))))
 
     ;; Default
-    :else []))
+    :else nil))
 
-;; Process complex constraints into simple positive constraints
-(defn flatten-constraints [constraints positive?]
-  (if (empty? constraints)
-    []
-    (mapcat (fn [c]
-              (case (:op c)
-                :is (if positive?
-                      [{:var (:var c) :type (:type c)}]
-                      [])
-                :not (flatten-constraints [{:op :is :var (:var c) :type (:type c)}] (not positive?))
-                :and (if positive?
-                       ;; For AND in positive path, flatten all constraints
-                       (flatten-constraints (:constraints c) positive?)
-                       ;; For AND in negative path, De Morgan: !(A && B) = !A || !B
-                       ;; We can't express OR constraints in simple form, skip for now
-                       [])
-                :or (if positive?
-                      ;; For OR in positive path, we can't flatten easily
-                      ;; This is a limitation - ideally we'd have separate environments
-                      ;; for each branch of the OR
-                      []
-                      ;; For OR in negative path, De Morgan: !(A || B) = !A && !B
-                      ;; So we can flatten all constraints with negated positive?
-                      (flatten-constraints
-                       (mapv (fn [sub-c]
-                               (case (:op sub-c)
-                                 :is {:op :not :var (:var sub-c) :type (:type sub-c)}
-                                 :not {:op :is :var (:var sub-c) :type (:type sub-c)}
-                                 sub-c))
-                             (:constraints c))
-                       true))))
-            constraints)))
+;; Apply type refinement for a single predicate
+(defn apply-predicate [env positive? var type]
+  (if-let [curr-type (get env var)]
+    (let [refined-type (if positive?
+                         (intersect-types curr-type type)
+                         (type-difference curr-type type))]
+      (if (= refined-type bottom-type)
+        ;; Constraint cannot be satisfied
+        env
+        (assoc env var refined-type)))
+    ;; Variable not in environment
+    env))
 
-;;; ---- Typechecking with Core.Logic ----
+;; Apply boolean formula to refine environment
+(defn apply-formula [env formula positive?]
+  (cond
+    ;; Boolean constants
+    (= formula true)  env
+    (= formula false) env
+
+    ;; Single predicate
+    (instance? TypePredicate formula)
+    (apply-predicate env positive? (:var formula) (:type formula))
+
+    ;; Negated predicate
+    (and (instance? Not formula) (instance? TypePredicate (:formula formula)))
+    (let [pred (:formula formula)]
+      (apply-predicate env (not positive?) (:var pred) (:type pred)))
+
+    ;; Conjunction
+    (instance? And formula)
+    (if positive?
+      ;; All clauses must be satisfied in positive mode
+      (reduce (fn [curr-env clause]
+                (apply-formula curr-env clause true))
+              env
+              (:clauses formula))
+      ;; In negative mode, we'd need separate environments for each clause negation
+      ;; This is an approximation
+      env)
+
+    ;; Disjunction
+    (instance? Or formula)
+    (if positive?
+      ;; In positive mode, we'd need separate environments for each clause
+      ;; This is an approximation
+      env
+      ;; In negative mode, all negated clauses must be satisfied (De Morgan)
+      (reduce (fn [curr-env clause]
+                (apply-formula curr-env clause false))
+              env
+              (:clauses formula)))
+
+    ;; Default
+    :else env))
+
+;;; ---- Typechecking with Boolean Formulas ----
 
 ;; Forward declaration for mutual recursion
 (declare typecheck)
 
-;; Special handling for negation of string? and other direct type predicates
-(defn handle-direct-negation [env expr]
-  (if (and (seq? expr)
-           (= (first expr) 'if)
-           (= (count expr) 4))
-    (let [condition (second expr)
-          then-val (nth expr 2)
-          else-val (nth expr 3)]
-      (if (and (seq? condition)
-               (= (count condition) 2)
-               (contains? (set (keys predicate-type-map)) (first condition))
-               (= then-val false)
-               (= else-val true))
-        ;; This is a direct negation pattern (if (pred x) false true)
-        (let [var (second condition)
-              pred-type (get predicate-type-map (first condition))
-              current-type (get env var)]
-          (if current-type
-            ;; Remove the predicate type from the current type
-            (let [negated-type (type-difference current-type pred-type)]
-              (if (= negated-type bottom-type)
-                env
-                (assoc env var negated-type)))
-            env))
-        env))
-    env))
-
-;; Enhanced if expression handler using core.logic
+;; Enhanced if expression handler using boolean formulas
 (defn typecheck-if-enhanced [env condition then-expr else-expr]
-  (let [;; Expand macros in the condition
-        expanded-condition (expand-all condition)
-        _ (println "Expanded:" expanded-condition)
+  (let [;; First typecheck the condition itself
+        condition-type (typecheck env condition)
 
-        ;; Extract constraints
-        constraints (extract-constraints expanded-condition)
-        _ (println "Constraints:" constraints)
+        ;; Extract and normalize formula
+        raw-formula (extract-formula condition)
+        formula (when raw-formula (to-nnf raw-formula))
 
-        ;; Check condition type
-        condition-type (typecheck env expanded-condition)
+        ;; Refine environment for both branches
+        then-env (if formula
+                   (apply-formula env formula true)
+                   env)
+        else-env (if formula
+                   (apply-formula env (make-not formula) true)
+                   env)
 
-        ;; Special handling for direct negations (not (string? x))
-        modified-env (if (and (seq? expanded-condition)
-                              (= (first expanded-condition) 'if))
-                       (handle-direct-negation env expanded-condition)
-                       env)
-
-        ;; Process constraints for the positive (then) branch
-        positive-constraints (flatten-constraints constraints true)
-        _ (println "Positive constraints:" positive-constraints)
-
-        ;; Process constraints for the negative (else) branch
-        negative-constraints (flatten-constraints constraints false)
-        _ (println "Negative constraints:" negative-constraints)
-
-        ;; Special handling for (not (or a b)) pattern in 6th test
-        negated-or-constraints
-        (if (and (seq? expanded-condition)
-                 (= (count expanded-condition) 2)
-                 (= (first expanded-condition) 'not)
-                 (seq? (second expanded-condition))
-                 (= (first (second expanded-condition)) 'or))
-          ;; This is form (not (or A B ...))
-          (let [or-args (rest (second expanded-condition))
-                or-constraints (mapcat extract-constraints or-args)]
-            ;; For !(A || B), we need !A && !B
-            (mapcat (fn [c]
-                      (case (:op c)
-                        :is [{:var (:var c) :type (type-difference (get env (:var c)) (:type c))}]
-                        :not [{:var (:var c) :type (:type c)}]
-                        []))
-                    or-constraints))
-          [])
-
-        ;; Apply constraints using core.logic
-        then-env (if (not-empty positive-constraints)
-                   (solve-path-constraints modified-env positive-constraints)
-                   modified-env)
-        else-env (if (not-empty negative-constraints)
-                   (solve-path-constraints modified-env
-                                           (concat negative-constraints negated-or-constraints))
-                   modified-env)
-
-        ;; Typecheck each branch
+        ;; Typecheck branches with refined environments
         then-type (typecheck then-env then-expr)
-        else-type (if else-expr (typecheck else-env else-expr) nil)]
+        else-type (if else-expr
+                    (typecheck else-env else-expr)
+                    nil)]
+
+    ;; Result is the union of both branch types
     (if (compatible-with-bool? condition-type)
       (union-type (remove nil? [then-type else-type]))
       (throw (ex-info "Condition must be a boolean-compatible type"
@@ -477,9 +432,41 @@
     (let [types (map #(typecheck env %) (rest expr))]
       (union-type types))
 
-    ;; If expression with core.logic constraint solving
+    ;; If expression with boolean formula constraint solving
     (and (seq? expr) (= (first expr) 'if))
     (typecheck-if-enhanced env (nth expr 1) (nth expr 2) (nth expr 3 nil))
+
+    ;; Special handling for boolean operators
+    (and (seq? expr) (= (first expr) 'and))
+    (do
+      ;; Type check all arguments
+      (doseq [arg (rest expr)]
+        (let [arg-type (typecheck env arg)]
+          (when-not (compatible-with-bool? arg-type)
+            (throw (ex-info "Arguments to 'and' must be boolean compatible"
+                           {:expr arg :type arg-type})))))
+      ;; Return boolean type
+      bool-type)
+
+    (and (seq? expr) (= (first expr) 'or))
+    (do
+      ;; Type check all arguments
+      (doseq [arg (rest expr)]
+        (let [arg-type (typecheck env arg)]
+          (when-not (compatible-with-bool? arg-type)
+            (throw (ex-info "Arguments to 'or' must be boolean compatible"
+                           {:expr arg :type arg-type})))))
+      ;; Return boolean type
+      bool-type)
+
+    (and (seq? expr) (= (first expr) 'not))
+    (let [arg (second expr)
+          arg-type (typecheck env arg)]
+      (when-not (compatible-with-bool? arg-type)
+        (throw (ex-info "Argument to 'not' must be boolean compatible"
+                       {:expr arg :type arg-type})))
+      ;; Return boolean type
+      bool-type)
 
     ;; Function application: (f arg1 arg2 ...)
     (and (seq? expr) (not-empty expr))
@@ -531,125 +518,48 @@
 (defn analyze-expr [expr]
   (println "\nAnalyzing expression:" expr)
   (try
-    (let [expanded (expand-all expr)
-          env (init-env)
-          result-type (typecheck env expanded)]
+    (let [env (init-env)
+          result-type (typecheck env expr)]
       (println "Result type:" result-type))
     (catch Exception e
       (println "Type error:" (.getMessage e))
       (println "  Details:" (ex-data e)))))
 
-;;; ---- Integration with Boolean Constraint Solver ----
-
-;; Initialize the boolean constraint solver with our type system functions
-(def boolean-constraint-solver
-  (bc/create-boolean-constraint-solver subtype? intersect-types type-difference union-type))
-
-;; Enhanced if expression handler using boolean constraint solver
-(defn typecheck-if-with-boolean-solver [env condition then-expr else-expr]
-  (let [;; Expand macros in the condition
-        expanded-condition (expand-all condition)
-        _ (println "Expanded:" expanded-condition)
-
-        ;; Check condition type
-        condition-type (typecheck env expanded-condition)
-        
-        ;; Check if there's an equality expression that needs special handling
-        has-equality (and (seq? expanded-condition)
-                        (= (count expanded-condition) 3)
-                        (= (first expanded-condition) '=))
-        
-        ;; Use the boolean constraint solver directly - it will handle the normalization
-        then-env (try 
-                   (boolean-constraint-solver env expanded-condition true)
-                   (catch Exception e 
-                     (println "Warning: Boolean solver failed for then branch:" (.getMessage e))
-                     ;; Special handling for equality expressions
-                     (if has-equality
-                       (let [var (second expanded-condition)
-                             val (nth expanded-condition 2)
-                             var-type (get env var)]
-                         ;; Only refine if it's a boolean value we're comparing with
-                         (if (and (boolean? val) (not (nil? var-type)))
-                           (assoc env var bool-type)
-                           env))
-                       env)))
-        else-env (try 
-                   (boolean-constraint-solver env expanded-condition false) 
-                   (catch Exception e 
-                     (println "Warning: Boolean solver failed for else branch:" (.getMessage e))
-                     ;; Special handling for equality expressions
-                     (if has-equality
-                       (let [var (second expanded-condition)
-                             val (nth expanded-condition 2)
-                             var-type (get env var)]
-                         ;; Only refine if it's a boolean value we're comparing with
-                         (if (and (boolean? val) (not (nil? var-type)))
-                           (assoc env var bool-type)
-                           env))
-                       env)))
-        
-        ;; Typecheck each branch
-        then-type (typecheck then-env then-expr)
-        else-type (if else-expr (typecheck else-env else-expr) nil)]
-    (if (compatible-with-bool? condition-type)
-      (union-type (remove nil? [then-type else-type]))
-      (throw (ex-info "Condition must be a boolean-compatible type"
-                     {:expr condition :type condition-type})))))
-
-;; Enhanced analysis function using boolean constraint solver
-(defn analyze-expr-boolean [expr]
-  (println "\nAnalyzing expression with boolean solver:")
-  (println expr)
-  (try
-    (let [expanded (expand-all expr)
-          env (init-env)
-          ;; Use specialized typecheck function with boolean solver for if expressions
-          result-type ((fn typecheck-with-boolean [env expr]
-                         (if (and (seq? expr) (= (first expr) 'if))
-                           (typecheck-if-with-boolean-solver env (nth expr 1) (nth expr 2) (nth expr 3 nil))
-                           (typecheck env expr)))
-                       env expanded)]
-      (println "Result type:" result-type))
-    (catch Exception e
-      (println "Type error:" (.getMessage e))
-      (println "  Details:" (ex-data e)))))
-
-;; Test the solver with full boolean constraint handling
+;; Test the symbolic boolean expression typechecking
 (defn test-boolean-constraint-solver []
-  (println "\n=== OCCURRENCE TYPING WITH FULL BOOLEAN CONSTRAINT SOLVING ===\n")
+  (println "\n=== OCCURRENCE TYPING WITH SYMBOLIC BOOLEAN EXPRESSIONS ===\n")
 
   ;; Simple negation - should properly handle the types
-  (analyze-expr-boolean '(let [x (union 42 "hello" true)]
-                           (if (not (string? x))
-                             "not a string"
-                             (string-length x))))
+  (analyze-expr '(let [x (union 42 "hello" true)]
+                   (if (not (string? x))
+                     "not a string"
+                     (string-length x))))
 
-  ;; Complex case from test 6 - properly handle nested not-or
-  (analyze-expr-boolean '(let [x (union 42 "hello" true)]
-                           (if (not (or (number? x) (boolean? x)))
-                             (string-length x)  ;; must be a string here
-                             "not a string")))
+  ;; Complex case - properly handle nested not-or
+  (analyze-expr '(let [x (union 42 "hello" true)]
+                   (if (not (or (number? x) (boolean? x)))
+                     (string-length x)  ;; must be a string here
+                     "not a string")))
 
   ;; Nested chains with multiple ANDs and ORs
-  (analyze-expr-boolean '(let [x (union 42 "hello" true false)]
-                           (if (and (not (number? x))
-                                    (or (string? x)
-                                        (and (boolean? x) (not (= x false)))))
-                             "refined correctly"
-                             "fallback")))
-                             
-  ;; Triple negation test - should properly handle 
-  (analyze-expr-boolean '(let [x (union 42 "hello" true)]
-                           (if (not (not (not (string? x))))
-                             "triple negation"
-                             (string-length x))))
+  (analyze-expr '(let [x (union 42 "hello" true false)]
+                   (if (and (not (number? x))
+                            (or (string? x)
+                                (and (boolean? x) (not (= x false)))))
+                     "refined correctly"
+                     "fallback")))
 
-  (println "\nBoolean constraint tests completed."))
+  ;; Triple negation test - should properly handle
+  (analyze-expr '(let [x (union 42 "hello" true)]
+                   (if (not (not (not (string? x))))
+                     "triple negation"
+                     (string-length x))))
 
-;; Update the main test function to include boolean constraint solver tests
+  (println "\nBoolean expression tests completed."))
+
+;; Main test function
 (defn test-occurrence-typing []
-  (println "\n=== OCCURRENCE TYPING WITH CORE.LOGIC ===\n")
+  (println "\n=== OCCURRENCE TYPING WITH SYMBOLIC BOOLEAN EXPRESSIONS ===\n")
 
   ;; Basic type predicate
   (analyze-expr '(let [x (union 42 "hello")]
@@ -710,7 +620,7 @@
 
   (println "\nStandard tests completed.")
 
-  ;; Run tests with full boolean constraint solver
+  ;; Run detailed tests with boolean expressions
   (test-boolean-constraint-solver))
 
 ;; Run tests
