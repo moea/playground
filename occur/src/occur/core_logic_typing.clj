@@ -1,7 +1,9 @@
 (ns occur.core-logic-typing
   (:require [clojure.core.logic :as l]
             [clojure.set :as set]
-            [occur.boolean-constraints :as bc]))
+            [occur.boolean-constraints :as bc :refer
+             [Conjunction? Disjunction? Negation? TypeConstraint?]])
+  (:import [occur.boolean_constraints TypeConstraint Negation Conjunction Disjunction]))
 
 ;;; ---- Type System Core ----
 
@@ -26,7 +28,7 @@
       :else {:type :union, :types flattened})))
 
 (defn function-type [param-type return-type]
-  {:type :function, :param-type param-type, :return-type return-type})
+  {:type :function :param-type param-type, :return-type return-type})
 
 (defn function-type? [t]
   (and (map? t) (= (:type t) :function)))
@@ -149,104 +151,28 @@
                {}
                predicate-type-map)))
 
-;;; ---- Boolean Formula Representation ----
+;;; ---- Boolean Formula Adaptation ----
 
-;; Data types for boolean formula
-(defrecord TypePredicate [var type])
-(defrecord And [clauses])
-(defrecord Or [clauses])
-(defrecord Not [formula])
+;; Initialize the boolean constraint solver with our type system functions
+(def boolean-constraint-solver
+  (bc/create-boolean-constraint-solver subtype? intersect-types type-difference union-type))
 
-;; Smart constructors that perform simplification
-(defn make-pred [var type]
-  (->TypePredicate var type))
+;; Helper functions to adapt between our typesystem and boolean_constraints.clj
 
-(defn make-and [& clauses]
-  (let [flattened (mapcat (fn [c]
-                            (if (instance? And c)
-                              (:clauses c)
-                              [c]))
-                          (remove nil? clauses))
-        filtered (filter #(not= % true) flattened)]
-    (cond
-      (some #(= % false) filtered) false
-      (empty? filtered) true
-      (= (count filtered) 1) (first filtered)
-      :else (->And (vec filtered)))))
+(defn get-predicate-var [formula]
+  (:var formula))
 
-(defn make-or [& clauses]
-  (let [flattened (mapcat (fn [c]
-                            (if (instance? Or c)
-                              (:clauses c)
-                              [c]))
-                          (remove nil? clauses))
-        filtered (filter #(not= % false) flattened)]
-    (cond
-      (some #(= % true) filtered) true
-      (empty? filtered) false
-      (= (count filtered) 1) (first filtered)
-      :else (->Or (vec filtered)))))
+(defn get-predicate-type [formula]
+  (:type formula))
 
-(defn make-not [formula]
-  (cond
-    ;; Double negation elimination
-    (instance? Not formula)
-    (:formula formula)
+(defn get-negation-formula [formula]
+  (:formula formula))
 
-    ;; De Morgan's laws
-    (instance? And formula)
-    (apply make-or (map make-not (:clauses formula)))
+(defn get-conjunction-clauses [formula]
+  (:clauses formula))
 
-    (instance? Or formula)
-    (apply make-and (map make-not (:clauses formula)))
-
-    ;; Boolean literals
-    (= formula true) false
-    (= formula false) true
-
-    ;; Otherwise just wrap in Not
-    :else (->Not formula)))
-
-;; Convert formula to Negation Normal Form (negations only around predicates)
-(defn to-nnf [formula]
-  (cond
-    ;; Literals pass through
-    (or (true? formula) (false? formula) (instance? TypePredicate formula))
-    formula
-
-    ;; Push negation down
-    (instance? Not formula)
-    (let [inner (:formula formula)]
-      (cond
-        ;; Double negation elimination
-        (instance? Not inner)
-        (to-nnf (:formula inner))
-
-        ;; De Morgan's laws
-        (instance? And inner)
-        (apply make-or (map (comp to-nnf make-not) (:clauses inner)))
-
-        (instance? Or inner)
-        (apply make-and (map (comp to-nnf make-not) (:clauses inner)))
-
-        ;; Negate a predicate
-        (instance? TypePredicate inner)
-        (->Not (to-nnf inner))
-
-        ;; Constants
-        (= inner true) false
-        (= inner false) true
-
-        :else (->Not (to-nnf inner))))
-
-    ;; Recursive NNF transformation
-    (instance? And formula)
-    (apply make-and (map to-nnf (:clauses formula)))
-
-    (instance? Or formula)
-    (apply make-or (map to-nnf (:clauses formula)))
-
-    :else formula))
+(defn get-disjunction-clauses [formula]
+  (:clauses formula))
 
 ;;; ---- Extract Constraints From Expressions ----
 
@@ -255,7 +181,7 @@
   (when (and (seq? expr) (symbol? (first expr)))
     (when-let [type (get predicate-type-map (first expr))]
       (when (= (count expr) 2)
-        (make-pred (second expr) type)))))
+        (bc/make-type-constraint (second expr) type)))))
 
 ;; Extract boolean formula from expression
 (defn extract-formula [expr]
@@ -275,16 +201,16 @@
       (case op
         ;; Boolean operations
         not (when-let [inner (extract-formula (first args))]
-              (make-not inner))
+              (bc/make-negation inner))
 
         and (let [inner-formulas (keep extract-formula args)]
               (if (seq inner-formulas)
-                (apply make-and inner-formulas)
+                (bc/make-conjunction inner-formulas)
                 nil))
 
         or (let [inner-formulas (keep extract-formula args)]
              (if (seq inner-formulas)
-               (apply make-or inner-formulas)
+               (bc/make-disjunction inner-formulas)
                nil))
 
         ;; If expression - extract from condition
@@ -298,7 +224,7 @@
             (if (= (count inner-formulas) 1)
               (first inner-formulas)
               (when (seq inner-formulas)
-                (apply make-and inner-formulas)))))))
+                (bc/make-conjunction inner-formulas)))))))
 
     ;; Default
     :else nil))
@@ -324,28 +250,28 @@
     (= formula false) env
 
     ;; Single predicate
-    (instance? TypePredicate formula)
-    (apply-predicate env positive? (:var formula) (:type formula))
+    (TypeConstraint? formula)
+    (apply-predicate env positive? (get-predicate-var formula) (get-predicate-type formula))
 
     ;; Negated predicate
-    (and (instance? Not formula) (instance? TypePredicate (:formula formula)))
-    (let [pred (:formula formula)]
-      (apply-predicate env (not positive?) (:var pred) (:type pred)))
+    (and (Negation? formula) (TypeConstraint? (get-negation-formula formula)))
+    (let [pred (get-negation-formula formula)]
+      (apply-predicate env (not positive?) (get-predicate-var pred) (get-predicate-type pred)))
 
     ;; Conjunction
-    (instance? And formula)
+    (Conjunction? formula)
     (if positive?
       ;; All clauses must be satisfied in positive mode
       (reduce (fn [curr-env clause]
                 (apply-formula curr-env clause true))
               env
-              (:clauses formula))
+              (get-conjunction-clauses formula))
       ;; In negative mode, we'd need separate environments for each clause negation
       ;; This is an approximation
       env)
 
     ;; Disjunction
-    (instance? Or formula)
+    (Disjunction? formula)
     (if positive?
       ;; In positive mode, we'd need separate environments for each clause
       ;; This is an approximation
@@ -354,7 +280,7 @@
       (reduce (fn [curr-env clause]
                 (apply-formula curr-env clause false))
               env
-              (:clauses formula)))
+              (get-disjunction-clauses formula)))
 
     ;; Default
     :else env))
@@ -371,14 +297,14 @@
 
         ;; Extract and normalize formula
         raw-formula (extract-formula condition)
-        formula (when raw-formula (to-nnf raw-formula))
+        formula (when raw-formula (bc/to-nnf raw-formula))
 
         ;; Refine environment for both branches
         then-env (if formula
                    (apply-formula env formula true)
                    env)
         else-env (if formula
-                   (apply-formula env (make-not formula) true)
+                   (apply-formula env (bc/make-negation formula) true)
                    env)
 
         ;; Typecheck branches with refined environments
