@@ -1,5 +1,6 @@
 (ns occur.toy-typing
-  (:require [clojure.set :as set]))
+  (:require [clojure.core.logic :as l]
+            [clojure.set :as set]))
 
 ;;;; Core Type Definitions ;;;;
 
@@ -23,17 +24,19 @@
 
 ;; Type Constructors
 (defn union-type [types]
-  (let [types-set (set types)]
+  (let [flattened (reduce (fn [acc t]
+                            (if (and (map? t) (= (:type t) :union))
+                              (set/union acc (:types t))
+                              (conj acc t)))
+                          #{}
+                          types)]
     (cond
-      (empty? types-set) bottom-type
-      (= (count types-set) 1) (first types-set)
-      :else {:type :union
-             :types types-set})))
+      (empty? flattened) bottom-type
+      (= (count flattened) 1) (first flattened)
+      :else {:type :union, :types flattened})))
 
 (defn function-type [param-type return-type]
-  {:type :function
-   :param-type param-type
-   :return-type return-type})
+  {:type :function, :param-type param-type, :return-type return-type})
 
 ;; Forward declarations for mutually recursive functions
 (declare subtype? type-equal? intersect-types remove-type typecheck)
