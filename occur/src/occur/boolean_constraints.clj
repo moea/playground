@@ -1,24 +1,21 @@
 (ns occur.boolean-constraints
   (:require [clojure.core.logic :as l]
+            [clojure.core.logic.pldb :as pldb]
             [clojure.set :as set]))
 
 ;;; ---- Boolean Formula Representation ----
 
 ;; Define data structures for boolean formulas
 (defrecord TypeConstraint [var type])
-(defrecord Conjunction    [clauses])
-(defrecord Disjunction    [clauses])
-(defrecord Negation       [formula])
-
-(def TypeConstraint? (partial instance? TypeConstraint))
-(def Conjunction?    (partial instance? Conjunction))
-(def Disjunction?    (partial instance? Disjunction))
-(def Negation?       (partial instance? Negation))
+(defrecord EqualityConstraint [var value])
+(defrecord Conjunction [clauses])
+(defrecord Disjunction [clauses])
+(defrecord Negation [formula])
 
 ;; Smart constructors that simplify formulas
 (defn make-conjunction [clauses]
   (let [flattened (mapcat (fn [c]
-                            (if (Conjunction? c)
+                            (if (instance? Conjunction c)
                               (:clauses c)
                               [c]))
                           clauses)
@@ -31,7 +28,7 @@
 
 (defn make-disjunction [clauses]
   (let [flattened (mapcat (fn [c]
-                            (if (Disjunction? c)
+                            (if (instance? Disjunction c)
                               (:clauses c)
                               [c]))
                           clauses)
@@ -45,8 +42,7 @@
 (defn make-negation [formula]
   (cond
     ;; Double negation elimination
-    (instance? Negation formula)
-    (:formula formula)
+    (instance? Negation formula) (:formula formula)
 
     ;; De Morgan's laws
     (instance? Conjunction formula)
@@ -55,44 +51,42 @@
     (instance? Disjunction formula)
     (make-conjunction (map make-negation (:clauses formula)))
 
-    ;; Boolean literals
-    (= formula true) false
-    (= formula false) true
-
     ;; Primitive
     :else (->Negation formula)))
 
 (defn make-type-constraint [var type]
   (->TypeConstraint var type))
 
+(defn make-equality-constraint [var value]
+  (->EqualityConstraint var value))
+
 ;;; ---- Boolean Formula Conversions ----
 
-;; Convert to Negation Normal Form (only Ands, Ors and Nots around literals)
+;; Convert to Negation Normal Form (NNF) - negations only at atoms
 (defn to-nnf [formula]
   (cond
-    ;; Primitives pass through
-    (or (true? formula) (false? formula) (instance? TypeConstraint formula))
-    formula
+    ;; Primitive cases
+    (true? formula) true
+    (false? formula) false
+    (instance? TypeConstraint formula) formula
 
-    ;; Push negation inward
+    ;; Negation - push down using De Morgan's laws
     (instance? Negation formula)
     (let [inner (:formula formula)]
       (cond
-        ;; Double negation elimination - handle nested cases better
-        (instance? Negation inner)
-        (recur (to-nnf (:formula inner))) ; Recur to handle triple or more negations
-
-        ;; De Morgan's laws
         (instance? Conjunction inner)
         (make-disjunction (map (comp to-nnf make-negation) (:clauses inner)))
 
         (instance? Disjunction inner)
         (make-conjunction (map (comp to-nnf make-negation) (:clauses inner)))
 
-        ;; Negation of primitive
+        (instance? Negation inner)
+        (to-nnf (:formula inner))
+
+        ;; Primitive negation
         :else (make-negation (to-nnf inner))))
 
-    ;; Recursively convert composite formulas
+    ;; Complex cases
     (instance? Conjunction formula)
     (make-conjunction (map to-nnf (:clauses formula)))
 
@@ -105,8 +99,8 @@
 (defn to-cnf [formula]
   (letfn [(distribute [disj conj]
             (make-conjunction
-             (map #(make-disjunction (conj (:clauses disj) %))
-                  (:clauses conj))))
+              (map #(make-disjunction (conj (:clauses disj) %))
+                   (:clauses conj))))
 
           (cnf-step [f]
             (cond
@@ -132,9 +126,9 @@
                     (if (empty? remaining)
                       first-conj
                       (cnf-step
-                       (distribute
-                        (make-disjunction remaining)
-                        first-conj))))))
+                        (distribute
+                          (make-disjunction remaining)
+                          first-conj))))))
 
               :else f))]
     (cnf-step (to-nnf formula))))
@@ -150,140 +144,161 @@
 ;; Define relation for checking if a formula is satisfied by an environment
 (defn satisfied-o [formula env]
   (l/conde
-   ;; Terminal cases
-   [(l/== formula true) l/succeed]
-   [(l/== formula false) l/fail]
+    ;; Terminal cases
+    [(l/== formula true) l/succeed]
+    [(l/== formula false) l/fail]
 
-   ;; Type constraint
-   [(l/fresh [var type current-type]
-      (l/== formula (->TypeConstraint var type))
-      (l/project [var env]
-                 (let [current-type (get env var)]
-                   (if (subtype? current-type type)
-                     l/succeed
-                     l/fail))))]
+    ;; Type constraint
+    [(l/fresh [var type current-type]
+       (l/== formula (->TypeConstraint var type))
+       (l/project [var env]
+         (let [current-type (get env var)]
+           (if (subtype? current-type type)
+             l/succeed
+             l/fail))))]
 
-   ;; Negation
-   [(l/fresh [inner]
-      (l/== formula (->Negation inner))
-      (l/conda
-       [(satisfied-o inner env) l/fail]
-       [l/succeed]))]
+    ;; Equality constraint
+    [(l/fresh [var value current-type]
+       (l/== formula (->EqualityConstraint var value))
+       (l/project [var value env]
+         (let [current-type (get env var)]
+           ;; For now, just check if the type allows the value's type
+           (if (cond
+                 (integer? value) (subtype? current-type :int)
+                 (string? value) (subtype? current-type :string)
+                 (boolean? value) (subtype? current-type :bool)
+                 :else false)
+             l/succeed
+             l/fail))))]
 
-   ;; Conjunction - all must be satisfied
-   [(l/fresh [clauses]
-      (l/== formula (->Conjunction clauses))
-      (l/project [clauses]
-                 (l/everyg #(satisfied-o % env) clauses)))]
+    ;; Negation
+    [(l/fresh [inner]
+       (l/== formula (->Negation inner))
+       (l/conda
+         [(satisfied-o inner env) l/fail]
+         [l/succeed]))]
 
-   ;; Disjunction - at least one must be satisfied
-   [(l/fresh [clauses]
-      (l/== formula (->Disjunction clauses))
-      (l/project [clauses]
-                 (l/conde
-                  (map #(satisfied-o % env) clauses))))]))
+    ;; Conjunction - all must be satisfied
+    [(l/fresh [clauses]
+       (l/== formula (->Conjunction clauses))
+       (l/project [clauses]
+         (l/everyg #(satisfied-o % env) clauses)))]
 
-(defn- merge-envs [all-envs]
-  (reduce
-   (fn [acc branch-env]
-     (if (empty? branch-env)
-       acc ;; Skip empty branches
-       (let [branch (first branch-env)] ;; Take first solution
-         (reduce-kv
-          (fn [result k v]
-            (if-let [curr-type (get result k)]
-              ;; Merge with union-type
-              (assoc result k (union-type #{curr-type v}))
-              ;; New variable in this branch
-              (assoc result k v)))
-          acc
-          branch))))
-   {}
-   all-envs))
-
-(defn- combine-envs [all-envs env]
-  (if (some empty? all-envs)
-    env ;; Some branch is unsatisfiable, keep original env
-    (let [merged-env (merge-envs all-envs)]
-      (reduce-kv
-       (fn [result k v]
-         (if (contains? result k)
-           result ;; Already merged from branches
-           (assoc result k v))) ;; Keep original
-       merged-env
-       env))))
-
-(defn- refine-clauses [env clauses]
-  (reduce
-   (fn [e clause]
-     (let [solutions (l/run 1 [q] (refine-env-o e clause q))]
-       (if (empty? solutions)
-         (reduced nil) ;; Short-circuit if unsatisfiable
-         (first solutions))))
-   env
-   clauses))
+    ;; Disjunction - at least one must be satisfied
+    [(l/fresh [clauses]
+       (l/== formula (->Disjunction clauses))
+       (l/project [clauses]
+         (l/conde
+           (map #(satisfied-o % env) clauses))))]))
 
 ;; Compute environment refinement given a constraint
 (defn refine-env-o [env formula refined]
   (l/conde
-   ;; Terminal cases
-   [(l/== formula true) (l/== refined env)]
-   [(l/== formula false) l/fail] ;; Unsatisfiable constraint
+    ;; Terminal cases
+    [(l/== formula true) (l/== refined env)]
+    [(l/== formula false) l/fail]  ;; Unsatisfiable constraint
 
-   ;; Type constraint - refine the type
-   [(l/fresh [var type]
-      (l/== formula (->TypeConstraint var type))
-      (l/project [var type env]
-                 (let [current-type (get env var)
-                       new-type     (if current-type
-                                      (intersect-types current-type type)
-                                      type)]
-                   (if (= new-type :bottom)
-                     l/fail
-                     (l/== refined (assoc env var new-type))))))]
+    ;; Type constraint - refine the type
+    [(l/fresh [var type]
+       (l/== formula (->TypeConstraint var type))
+       (l/project [var type env]
+         (let [current-type (get env var)
+               new-type (if current-type
+                          (intersect-types current-type type)
+                          type)]
+           (if (= new-type :bottom)
+             l/fail
+             (l/== refined (assoc env var new-type))))))]
 
-   ;; Negation
-   [(l/fresh [inner var type]
-      (l/== formula (->Negation (->TypeConstraint var type)))
-      (l/project [var type env]
-                 (let [current-type (get env var)
-                       new-type     (if current-type
-                                      (type-difference current-type type)
-                                      nil)]
-                   (if (or (nil? new-type) (= new-type :bottom))
-                     l/fail
-                     (l/== refined (assoc env var new-type))))))]
+    ;; Equality constraint - refine to the specific value's type
+    [(l/fresh [var value]
+       (l/== formula (->EqualityConstraint var value))
+       (l/project [var value env]
+         (let [current-type (get env var)
+               value-type (cond
+                           (integer? value) :int
+                           (string? value) :string
+                           (boolean? value) :bool
+                           :else nil)
+               new-type (if (and current-type value-type)
+                          (intersect-types current-type value-type)
+                          (or value-type current-type))]
+           (if (or (nil? new-type) (= new-type :bottom))
+             l/fail
+             (l/== refined (assoc env var new-type))))))]
 
-   ;; Conjunction - refine through each clause sequentially
-   [(l/fresh [clauses intermediate-envs final-env]
-      (l/== formula (->Conjunction clauses))
-      (l/project [clauses env]
-                 (let [result (refine-clauses env clauses)]
-                   (if (nil? result)
-                     l/fail
-                     (l/== refined result)))))]
+    ;; Negation
+    [(l/fresh [inner var type]
+       (l/== formula (->Negation (->TypeConstraint var type)))
+       (l/project [var type env]
+         (let [current-type (get env var)
+               new-type (if current-type
+                          (type-difference current-type type)
+                          nil)]
+           (if (or (nil? new-type) (= new-type :bottom))
+             l/fail
+             (l/== refined (assoc env var new-type))))))]
 
-   ;; Disjunction - branch and take union of types
-   [(l/fresh [clauses branch-envs]
-      (l/== formula (->Disjunction clauses))
-      (l/project [clauses env]
-                 ;; Get refined env for each branch
-                 (let [all-envs (map (fn [clause]
-                                       (l/run* [q]
-                                         (refine-env-o env clause q)))
-                                     clauses)
-                       ;; Combine environments by taking union of possible types for each variable
-                       ]
-                   (l/== refined (combine-envs all-envs env)))))]))
+    ;; Conjunction - refine through each clause sequentially
+    [(l/fresh [clauses intermediate-envs final-env]
+       (l/== formula (->Conjunction clauses))
+       (l/project [clauses env]
+         (let [result (reduce (fn [e clause]
+                                (let [solutions (l/run 1 [q] (refine-env-o e clause q))]
+                                  (if (empty? solutions)
+                                    (reduced nil) ;; Short-circuit if unsatisfiable
+                                    (first solutions))))
+                              env
+                              clauses)]
+           (if (nil? result)
+             l/fail
+             (l/== refined result)))))]
+
+    ;; Disjunction - branch and take union of types
+    [(l/fresh [clauses branch-envs]
+       (l/== formula (->Disjunction clauses))
+       (l/project [clauses env]
+         ;; Get refined env for each branch
+         (let [all-envs (map (fn [clause]
+                               (l/run* [q]
+                                 (refine-env-o env clause q)))
+                             clauses)
+               ;; Combine environments by taking union of possible types for each variable
+               combined (if (some empty? all-envs)
+                          env  ;; Some branch is unsatisfiable, keep original env
+                          (let [merged-env (reduce (fn [acc branch-env]
+                                                    (if (empty? branch-env)
+                                                      acc  ;; Skip empty branches
+                                                      (let [branch (first branch-env)] ;; Take first solution
+                                                        (reduce-kv (fn [result k v]
+                                                                     (if-let [curr-type (get result k)]
+                                                                       ;; Merge with union-type
+                                                                       (assoc result k (union-type #{curr-type v}))
+                                                                       ;; New variable in this branch
+                                                                       (assoc result k v)))
+                                                                   acc
+                                                                   branch))))
+                                                  {}  ;; Start with empty environment
+                                                  all-envs)
+                                ;; For any vars in original env not in any branch, keep original value
+                                final-env (reduce-kv (fn [result k v]
+                                                      (if (contains? result k)
+                                                        result  ;; Already merged from branches
+                                                        (assoc result k v)))  ;; Keep original
+                                                    merged-env
+                                                    env)]
+                            final-env))]
+           (l/== refined combined))))]))
+
 ;;; ---- Constraint Solving Interface ----
 
 ;; Convert our constraint structure to boolean formulas
 (defn constraint->formula [constraint]
-(case (:op constraint)
-  :is (make-type-constraint (:var constraint) (:type constraint))
-  :not (make-negation (make-type-constraint (:var constraint) (:type constraint)))
-  :and (make-conjunction (map constraint->formula (:constraints constraint)))
-  :or (make-disjunction (map constraint->formula (:constraints constraint)))))
+  (case (:op constraint)
+    :is (make-type-constraint (:var constraint) (:type constraint))
+    :not (make-negation (make-type-constraint (:var constraint) (:type constraint)))
+    :and (make-conjunction (map constraint->formula (:constraints constraint)))
+    :or (make-disjunction (map constraint->formula (:constraints constraint)))))
 
 ;; Solve a boolean constraint system
 (defn solve-constraint-system [env constraints]
@@ -291,8 +306,10 @@
     env
     ;; Convert to formulas and combine with AND
     (let [formulas (map constraint->formula constraints)
-          formula   (make-conjunction formulas)
-          cnf       (to-cnf formula)
+          formula (make-conjunction formulas)
+          ;; Convert to CNF for more efficient solving
+          cnf (to-cnf formula)
+          ;; Use core.logic to find a solution
           solutions (l/run 1 [q]
                       (refine-env-o env cnf q))]
       (if (empty? solutions)
@@ -361,16 +378,28 @@
 
       ;; Equality expressions - special handling
       = (if (and (= (count expr) 3)
-                 (symbol? (second expr))
-                 (or (boolean? (nth expr 2)) (nil? (nth expr 2))))
-          ;; Handle (= x true/false/nil) expressions
+                (symbol? (second expr)))
           (let [var (second expr)
                 val (nth expr 2)]
-            (if (boolean? val)
-              ;; Both true and false constrain to boolean type
-              (make-type-constraint var :bool)
-              ;; (= x nil) is equivalent to (nil? x)
-              (make-type-constraint var :nil)))
+            (cond
+              ;; Handle (= x true/false/nil) expressions
+              (or (boolean? val) (nil? val))
+              (let [type-val (cond
+                             (true? val) :bool
+                             (false? val) :bool
+                             (nil? val) :nil)]
+                (make-type-constraint var type-val))
+                
+              ;; Handle numeric equality (= x 42) - refine to int type
+              (integer? val)
+              (make-type-constraint var :int)
+              
+              ;; Handle string equality (= x "hello") - refine to string type
+              (string? val)
+              (make-type-constraint var :string)
+              
+              ;; Other equality expressions - we don't extract constraints
+              :else nil))
           ;; Other equality expressions - we don't extract constraints
           nil)
 
@@ -417,14 +446,16 @@
                       'number? :int
                       'boolean? :bool
                       '= (fn [expr _]
-                           ;; Handle (= x true/false) as a special case
+                           ;; Handle (= x value) to extract proper type constraints
                            (when (and (= (count expr) 3)
-                                      (symbol? (second expr))
-                                      (boolean? (nth expr 2)))
-                             (let [var (second expr)]
-                               ;; Both true and false checks just constrain to boolean type
-                               ;; For more sophisticated handling, we'd need to track the exact boolean value
-                               (make-type-constraint var :bool))))}
+                                     (symbol? (second expr)))
+                             (let [var (second expr)
+                                   val (nth expr 2)]
+                               (cond
+                                 (boolean? val) (make-type-constraint var :bool)
+                                 (integer? val) (make-type-constraint var :int)
+                                 (string? val) (make-type-constraint var :string)
+                                 :else nil))))}
             formula (extract-constraints-from-expr expr-or-constraints pred-map)]
         (if formula
           (let [formula-to-use (if positive?

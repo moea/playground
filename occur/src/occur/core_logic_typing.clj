@@ -1,8 +1,7 @@
 (ns occur.core-logic-typing
   (:require [clojure.core.logic :as l]
             [clojure.set :as set]
-            [occur.boolean-constraints :as bc :refer
-             [Conjunction? Disjunction? Negation? TypeConstraint?]])
+            [occur.boolean-constraints :as bc])
   (:import [occur.boolean_constraints TypeConstraint Negation Conjunction Disjunction]))
 
 ;;; ---- Type System Core ----
@@ -15,20 +14,38 @@
 (def bottom-type :bottom)
 
 ;; Type constructors and predicates
-(defn union-type [types]
-  (let [flattened (reduce (fn [acc t]
+(defn union-type 
+  "Create a union type from a collection of types.
+   Can be called with either a collection or multiple arguments."
+  [types & more-types]
+  (let [all-types (if (and (coll? types) (empty? more-types))
+                    types  ;; Called with a single collection
+                    (cons types more-types))  ;; Called with multiple args
+        flattened (reduce (fn [acc t]
                             (if (and (map? t) (= (:type t) :union))
                               (set/union acc (:types t))
                               (conj acc t)))
                           #{}
-                          types)]
+                          all-types)]
     (cond
       (empty? flattened) bottom-type
       (= (count flattened) 1) (first flattened)
       :else {:type :union, :types flattened})))
 
-(defn function-type [param-type return-type]
-  {:type :function :param-type param-type, :return-type return-type})
+(defn function-type 
+  "Create a function type with specified parameter types and return type.
+   Supports fixed arity functions with multiple parameters."
+  ([param-types return-type]
+   {:type :function 
+    :param-types (if (vector? param-types) param-types [param-types])
+    :return-type return-type})
+  ([param-type1 param-type2 & more-types]
+   (let [return-type (last more-types)
+         param-types (vec (concat [param-type1 param-type2] 
+                                 (butlast more-types)))]
+     {:type :function
+      :param-types param-types
+      :return-type return-type})))
 
 (defn function-type? [t]
   (and (map? t) (= (:type t) :function)))
@@ -57,10 +74,17 @@
     (and (map? sub-type) (= (:type sub-type) :union))
     (every? (fn [t] (subtype? t super-type)) (:types sub-type))
 
-    ;; Function subtyping - contravariant in parameter type, covariant in return type
+    ;; Function subtyping - contravariant in parameter types, covariant in return type
     (and (function-type? sub-type) (function-type? super-type))
-    (and (subtype? (:param-type super-type) (:param-type sub-type))
-         (subtype? (:return-type sub-type) (:return-type super-type)))
+    (let [sub-params (:param-types sub-type)
+          super-params (:param-types super-type)]
+      (and 
+       ;; Same number of parameters
+       (= (count sub-params) (count super-params))
+       ;; Contravariant in parameter types
+       (every? identity (map subtype? super-params sub-params))
+       ;; Covariant in return type
+       (subtype? (:return-type sub-type) (:return-type super-type))))
 
     :else false))
 
@@ -138,16 +162,29 @@
 ;; Initialize environment with primitives
 (defn init-env []
   (merge
-    {'string-length (function-type string-type int-type)
-     '= (function-type any-type bool-type)
-     'and (function-type bool-type bool-type)
-     'or (function-type bool-type bool-type)
-     'not (function-type bool-type bool-type)}
-    ;; Add predicates to environment as functions
-    (reduce-kv (fn [env pred-name type]
+    {;; Fixed arity functions
+     'string-length (function-type [string-type] int-type)
+     
+     ;; Operators that support multiple arguments
+     ;; Note: For operators like <, >, =, +, we define them with their minimal arity (2 params)
+     ;; in the environment, but the typecheck function has special handling to allow them
+     ;; to accept any number of arguments (>= 2) at application sites
+     '< (function-type [int-type int-type] bool-type)  ;; < operator (2+ args)
+     '> (function-type [int-type int-type] bool-type)  ;; > operator (2+ args)
+     '= (function-type [any-type any-type] bool-type)  ;; = operator (2+ args)
+     '+ (function-type [int-type int-type] int-type)   ;; + operator (2+ args)
+     
+     ;; Boolean operators
+     'and (function-type [bool-type bool-type] bool-type)
+     'or (function-type [bool-type bool-type] bool-type)
+     'not (function-type [bool-type] bool-type)
+    }
+    
+    ;; Add predicates to environment as functions - each takes a single any-type param
+    (reduce-kv (fn [env pred-name _]
                  (assoc env
                         pred-name
-                        (function-type any-type bool-type)))
+                        (function-type [any-type] bool-type)))
                {}
                predicate-type-map)))
 
@@ -159,6 +196,20 @@
 
 ;; Helper functions to adapt between our typesystem and boolean_constraints.clj
 
+;; Check formula type
+(defn type-predicate? [formula]
+  (instance? TypeConstraint formula))
+
+(defn negation? [formula]
+  (instance? Negation formula))
+
+(defn conjunction? [formula]
+  (instance? Conjunction formula))
+
+(defn disjunction? [formula]
+  (instance? Disjunction formula))
+
+;; Get components
 (defn get-predicate-var [formula]
   (:var formula))
 
@@ -178,10 +229,58 @@
 
 ;; Extract a predicate from an expression
 (defn extract-predicate [expr]
-  (when (and (seq? expr) (symbol? (first expr)))
+  (cond
+    ;; Standard type predicates (e.g., number? var)
+    (and (seq? expr) (symbol? (first expr)))
     (when-let [type (get predicate-type-map (first expr))]
       (when (= (count expr) 2)
-        (bc/make-type-constraint (second expr) type)))))
+        (bc/make-type-constraint (second expr) type)))
+    
+    ;; Handle equality comparisons with literals
+    (and (seq? expr) (= (first expr) '=) (>= (count (rest expr)) 2))
+    (let [args (rest expr)]
+      (cond
+        ;; Check for variable comparison with a literal
+        (and (symbol? (first args)) (not (symbol? (second args))))
+        (let [var (first args)
+              literal (second args)]
+          ;; Create constraint based on literal type
+          (cond
+            (integer? literal) (bc/make-type-constraint var :int)
+            (string? literal) (bc/make-type-constraint var :string)
+            (boolean? literal) (bc/make-type-constraint var 
+                                 (if literal :true :false))
+            :else nil))
+            
+        ;; Check for literal comparison with a variable
+        (and (not (symbol? (first args))) (symbol? (second args)))
+        (let [literal (first args)
+              var (second args)]
+          ;; Create constraint based on literal type
+          (cond
+            (integer? literal) (bc/make-type-constraint var :int)
+            (string? literal) (bc/make-type-constraint var :string)
+            (boolean? literal) (bc/make-type-constraint var 
+                                 (if literal :true :false))
+            :else nil))
+            
+        :else nil))
+    
+    ;; Handle comparison operators like <, >
+    (and (seq? expr) (contains? #{'< '>} (first expr)) (>= (count (rest expr)) 2))
+    (let [op (first expr)
+          args (rest expr)]
+      ;; For < and >, all arguments must be numbers
+      (when (some symbol? args)
+        ;; Create a conjunction of constraints for all variables
+        (let [var-constraints 
+              (for [arg args :when (symbol? arg)]
+                (bc/make-type-constraint arg :int))]
+          (if (= (count var-constraints) 1)
+            (first var-constraints)
+            (bc/make-conjunction var-constraints)))))
+    
+    :else nil))
 
 ;; Extract boolean formula from expression
 (defn extract-formula [expr]
@@ -232,15 +331,73 @@
 ;; Apply type refinement for a single predicate
 (defn apply-predicate [env positive? var type]
   (if-let [curr-type (get env var)]
-    (let [refined-type (if positive?
-                         (intersect-types curr-type type)
-                         (type-difference curr-type type))]
-      (if (= refined-type bottom-type)
-        ;; Constraint cannot be satisfied
-        env
-        (assoc env var refined-type)))
+    (let [;; Map the constraint type (:string, :int, :bool) to our type system (string-type, int-type, bool-type)
+          target-type (case type
+                        :int int-type
+                        :string string-type
+                        :bool bool-type
+                        :false false  ;; Special case for false value
+                        :true true    ;; Special case for true value
+                        type)]
+      
+      ;; Handle it differently based on what's in the set
+      (if (and (map? curr-type) (= (:type curr-type) :union))
+        (if positive?
+          ;; Positive constraint - keep only matching types
+          (let [types (:types curr-type)
+                result-types (case target-type
+                              :int    (filter #(or (= % int-type) (integer? %)) types)
+                              :string (filter #(or (= % string-type) (string? %)) types)
+                              :bool   (filter #(or (= % bool-type) (instance? Boolean %)) types)
+                              false   (filter #(= % false) types)
+                              true    (filter #(= % true) types)
+                              ;; Default
+                              (filter #(= % target-type) types))]
+            (if (empty? result-types)
+              env
+              (let [new-type (union-type result-types)]
+                (assoc env var new-type))))
+          
+          ;; Negative constraint - remove matching types
+          (let [types (:types curr-type)
+                result-types (case target-type
+                               :int    (remove #(or (= % int-type) (integer? %)) types)
+                               :string (remove #(or (= % string-type) (string? %)) types)
+                               :bool   (remove #(or (= % bool-type) (instance? Boolean %)) types)
+                               false   (remove #(= % false) types)
+                               true    (remove #(= % true) types)
+                               ;; Default
+                               (remove #(= % target-type) types))]
+            (if (empty? result-types) 
+              env
+              (let [new-type (union-type result-types)]
+                (assoc env var new-type)))))
+        
+        ;; Not a union type, use standard intersect/difference
+        (let [refined-type (if positive?
+                            (intersect-types curr-type target-type)
+                            (type-difference curr-type target-type))]
+          (if (= refined-type bottom-type)
+            ;; Constraint cannot be satisfied
+            env
+            (assoc env var refined-type)))))
     ;; Variable not in environment
     env))
+
+;; Helper for handling disjunctions - merge environments by taking union of types
+(defn merge-environments [base-env & envs]
+  (if (empty? envs)
+    base-env
+    (let [all-vars (set (mapcat #(keys (select-keys % (keys base-env))) envs))
+          ;; For each variable, take the union of its type across all branches
+          merged-env (reduce (fn [result var]
+                               (let [branch-types (keep #(get % var) envs)]
+                                 (if (seq branch-types)
+                                   (assoc result var (apply union-type branch-types))
+                                   result)))
+                             base-env
+                             all-vars)]
+      merged-env)))
 
 ;; Apply boolean formula to refine environment
 (defn apply-formula [env formula positive?]
@@ -250,37 +407,31 @@
     (= formula false) env
 
     ;; Single predicate
-    (TypeConstraint? formula)
+    (type-predicate? formula)
     (apply-predicate env positive? (get-predicate-var formula) (get-predicate-type formula))
 
     ;; Negated predicate
-    (and (Negation? formula) (TypeConstraint? (get-negation-formula formula)))
+    (and (negation? formula) (type-predicate? (get-negation-formula formula)))
     (let [pred (get-negation-formula formula)]
       (apply-predicate env (not positive?) (get-predicate-var pred) (get-predicate-type pred)))
 
     ;; Conjunction
-    (Conjunction? formula)
-    (if positive?
-      ;; All clauses must be satisfied in positive mode
-      (reduce (fn [curr-env clause]
-                (apply-formula curr-env clause true))
-              env
-              (get-conjunction-clauses formula))
-      ;; In negative mode, we'd need separate environments for each clause negation
-      ;; This is an approximation
-      env)
+    (conjunction? formula)
+    (reduce (fn [e clause]
+              (apply-formula e clause positive?))
+            env
+            (get-conjunction-clauses formula))
 
     ;; Disjunction
-    (Disjunction? formula)
-    (if positive?
-      ;; In positive mode, we'd need separate environments for each clause
-      ;; This is an approximation
-      env
-      ;; In negative mode, all negated clauses must be satisfied (De Morgan)
-      (reduce (fn [curr-env clause]
-                (apply-formula curr-env clause false))
-              env
-              (get-disjunction-clauses formula)))
+    (disjunction? formula)
+    (let [refined-envs (map #(apply-formula env % positive?)
+                           (get-disjunction-clauses formula))]
+      ;; Combine all the environments
+      (reduce merge-environments env refined-envs))
+
+    ;; General negation - recursively apply with inverted positive flag
+    (negation? formula)
+    (apply-formula env (get-negation-formula formula) (not positive?))
 
     ;; Default
     :else env))
@@ -399,39 +550,74 @@
     (let [fn-expr (first expr)
           args (rest expr)]
       (cond
-        ;; Handle built-in operators that accept two arguments
-        (contains? #{'< '> '+ '=} fn-expr)
-        (if (= (count args) 2)
-          (let [arg1-type (typecheck env (first args))
-                arg2-type (typecheck env (second args))]
-            ;; Return appropriate return type based on the operator
-            (case fn-expr
-              < bool-type
-              > bool-type
-              = bool-type
-              + (if (and (subtype? arg1-type int-type)
-                        (subtype? arg2-type int-type))
-                 int-type
-                 (throw (ex-info "Arguments to + must be numbers"
-                                {:arg1-type arg1-type
-                                 :arg2-type arg2-type})))))
-          (throw (ex-info (str fn-expr " requires exactly 2 arguments")
-                         {:expr expr})))
-
+        ;; Special case for common operators that can take multiple arguments
+        (contains? #{'< '> '= '+} fn-expr)
+        (cond
+          ;; Less than 2 arguments for operators that need at least 2
+          (< (count args) 2)
+          (throw (ex-info (str fn-expr " requires at least 2 arguments")
+                         {:expr expr}))
+          
+          ;; Any number of arguments (2+)
+          :else
+          (let [;; Typecheck all arguments
+                arg-types (mapv #(typecheck env %) args)]
+            (cond
+              ;; For comparison operators, all arguments must be numbers
+              (contains? #{'< '> '=} fn-expr)
+              (do
+                ;; Verify all arguments are numbers for < and >
+                (when (contains? #{'< '>} fn-expr)
+                  (doseq [arg-type arg-types]
+                    (when-not (subtype? arg-type int-type)
+                      (throw (ex-info (str "Arguments to " fn-expr " must be numbers")
+                                     {:arg-types arg-types})))))
+                ;; Return boolean type
+                bool-type)
+              
+              ;; For addition, all arguments must be numbers
+              (= fn-expr '+)
+              (do
+                (doseq [arg-type arg-types]
+                  (when-not (subtype? arg-type int-type)
+                    (throw (ex-info "Arguments to + must be numbers"
+                                   {:arg-types arg-types}))))
+                ;; Return integer type
+                int-type))))
+        
         ;; For all other function applications
         :else
         (let [fn-type (typecheck env fn-expr)]
           (if (function-type? fn-type)
-            (if (= (count args) 1)
-              (let [arg-expr (first args)
-                    arg-type (typecheck env arg-expr)]
-                (if (subtype? arg-type (:param-type fn-type))
-                  (:return-type fn-type)
-                  (throw (ex-info "Argument type doesn't match parameter type"
-                                 {:fn-type fn-type
-                                  :arg-type arg-type}))))
-              (throw (ex-info "Function application with multiple arguments not supported"
-                            {:expr expr})))
+            (let [param-types (:param-types fn-type)]
+              (cond
+                ;; No arguments, but function expects parameters
+                (and (empty? args) (not-empty param-types))
+                (throw (ex-info "Function requires arguments but none provided"
+                              {:fn-type fn-type}))
+                
+                ;; No arguments, function expects no parameters
+                (and (empty? args) (empty? param-types))
+                (:return-type fn-type)
+                
+                ;; Check if argument count matches parameter count
+                (not= (count args) (count param-types))
+                (throw (ex-info (str "Function expects " (count param-types) 
+                                   " arguments but got " (count args))
+                              {:fn-type fn-type
+                               :args-count (count args)}))
+                
+                ;; Check each argument against corresponding parameter type
+                :else
+                (do
+                  (doseq [[arg param-type] (map vector args param-types)]
+                    (let [arg-type (typecheck env arg)]
+                      (when-not (subtype? arg-type param-type)
+                        (throw (ex-info "Argument type doesn't match parameter type"
+                                      {:fn-type fn-type
+                                       :arg-type arg-type
+                                       :param-type param-type})))))
+                  (:return-type fn-type))))
             (throw (ex-info "Applying a non-function"
                           {:expr expr
                            :fn-type fn-type}))))))
@@ -441,113 +627,6 @@
 
 ;;; ---- Testing ----
 
-(defn analyze-expr [expr]
-  (println "\nAnalyzing expression:" expr)
-  (try
-    (let [env (init-env)
-          result-type (typecheck env expr)]
-      (println "Result type:" result-type))
-    (catch Exception e
-      (println "Type error:" (.getMessage e))
-      (println "  Details:" (ex-data e)))))
-
-;; Test the symbolic boolean expression typechecking
-(defn test-boolean-constraint-solver []
-  (println "\n=== OCCURRENCE TYPING WITH SYMBOLIC BOOLEAN EXPRESSIONS ===\n")
-
-  ;; Simple negation - should properly handle the types
-  (analyze-expr '(let [x (union 42 "hello" true)]
-                   (if (not (string? x))
-                     "not a string"
-                     (string-length x))))
-
-  ;; Complex case - properly handle nested not-or
-  (analyze-expr '(let [x (union 42 "hello" true)]
-                   (if (not (or (number? x) (boolean? x)))
-                     (string-length x)  ;; must be a string here
-                     "not a string")))
-
-  ;; Nested chains with multiple ANDs and ORs
-  (analyze-expr '(let [x (union 42 "hello" true false)]
-                   (if (and (not (number? x))
-                            (or (string? x)
-                                (and (boolean? x) (not (= x false)))))
-                     "refined correctly"
-                     "fallback")))
-
-  ;; Triple negation test - should properly handle
-  (analyze-expr '(let [x (union 42 "hello" true)]
-                   (if (not (not (not (string? x))))
-                     "triple negation"
-                     (string-length x))))
-
-  (println "\nBoolean expression tests completed."))
-
-;; Main test function
-(defn test-occurrence-typing []
-  (println "\n=== OCCURRENCE TYPING WITH SYMBOLIC BOOLEAN EXPRESSIONS ===\n")
-
-  ;; Basic type predicate
-  (analyze-expr '(let [x (union 42 "hello")]
-                   (if (string? x)
-                     (string-length x)
-                     0)))
-
-  ;; Direct negation with not
-  (analyze-expr '(let [x (union 42 "hello" true)]
-                   (if (not (string? x))
-                     "not a string"
-                     (string-length x))))
-
-  ;; Compound expressions with OR
-  (analyze-expr '(let [x (union 42 "hello" true)]
-                   (if (or (number? x) (string? x))
-                     "number or string"
-                     "boolean")))
-
-  ;; Compound expressions with AND
-  (analyze-expr '(let [x (union 42 "hello" true)]
-                   (if (and (string? x) (not (boolean? x)))
-                     (string-length x)
-                     "not a valid string")))
-
-  ;; Complex nested boolean expressions
-  (analyze-expr '(let [x (union 42 "hello" true)]
-                   (if (or (number? x)
-                           (and (string? x) (not (boolean? x))))
-                     "valid input"
-                     "invalid input")))
-
-  ;; Nested refinements with negation
-  (analyze-expr '(let [x (union 42 "hello" true)]
-                   (if (not (or (number? x) (boolean? x)))
-                     (string-length x)  ;; must be a string here
-                     "not a string")))
-
-  ;; Multiple arguments for AND
-  (analyze-expr '(let [x (union 42 "hello" true)]
-                   (if (and (not (boolean? x)) (not (number? x)) (string? x))
-                     (string-length x)
-                     0)))
-
-  ;; Multiple arguments for OR
-  (analyze-expr '(let [x (union 42 "hello" true false)]
-                   (if (or (number? x) (string? x) (boolean? x))
-                     "known type"
-                     "unknown type")))
-
-  ;; Complex nested expression with multiple arguments
-  (analyze-expr '(let [x (union 42 "hello" true)]
-                   (if (and (not (number? x))
-                            (or (string? x) (boolean? x))
-                            (not (and (boolean? x) (string? x))))
-                     "valid refined type"
-                     "invalid type")))
-
-  (println "\nStandard tests completed.")
-
-  ;; Run detailed tests with boolean expressions
-  (test-boolean-constraint-solver))
-
-;; Run tests
-(test-occurrence-typing)
+(defn -main [& args]
+  (println "Core Logic Typing System")
+  (println "To run the tests, use: lein test occur.core-logic-typing-test"))
