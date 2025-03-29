@@ -1,4 +1,5 @@
 title: Type Playground
+name: Moe Aboulkheir
 email: moe.aboulkheir@gmail.com
 description: >-
   Experiments with types, type systems & related topics.
@@ -22,4 +23,4 @@ exclude:
   - vendor/bundle/
   - vendor/cache/
   - vendor/gems/
-  - vendor/ruby/ 
+  - vendor/ruby/
