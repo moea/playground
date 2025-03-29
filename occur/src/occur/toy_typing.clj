@@ -43,7 +43,7 @@
   (cond
     (and (keyword? t1) (keyword? t2)) (= t1 t2)
     (and (union-type? t1) (union-type? t2)) (= (:types t1) (:types t2))
-    (and (function-type? t1) (function-type? t2)) 
+    (and (function-type? t1) (function-type? t2))
     (and (type-equal? (:param-type t1) (:param-type t2))
          (type-equal? (:return-type t1) (:return-type t2)))
     :else false))
@@ -53,17 +53,17 @@
     (bottom-type? t1) true  ;; Bottom is a subtype of everything
     (any-type? t2) true     ;; Everything is a subtype of Any
     (type-equal? t1 t2) true
-    
+
     (union-type? t2) (if (union-type? t1)
                        (every? (fn [t] (some #(subtype? t %) (:types t2))) (:types t1))
                        (some #(subtype? t1 %) (:types t2)))
-    
+
     (union-type? t1) (every? #(subtype? % t2) (:types t1))
-    
+
     (and (function-type? t1) (function-type? t2))
     (and (subtype? (:param-type t2) (:param-type t1))  ; Contravariant in param type
          (subtype? (:return-type t1) (:return-type t2))) ; Covariant in return type
-    
+
     :else false))
 
 (defn intersect-types [t1 t2]
@@ -73,34 +73,34 @@
     (bottom-type? t2) t2
     (any-type? t1) t2
     (any-type? t2) t1
-    
+
     ;; If both are unions, intersect their type sets
     (and (union-type? t1) (union-type? t2))
     (let [common-types (set/intersection (:types t1) (:types t2))]
       (if (empty? common-types)
         bottom-type
         (union-type common-types)))
-    
+
     ;; If one is a union, filter to only types that are subtypes of the other
     (union-type? t1)
     (let [compatible-types (filter #(subtype? % t2) (:types t1))]
       (if (empty? compatible-types)
         bottom-type
         (union-type compatible-types)))
-    
+
     (union-type? t2)
     (let [compatible-types (filter #(subtype? % t1) (:types t2))]
       (if (empty? compatible-types)
         bottom-type
         (union-type compatible-types)))
-    
+
     ;; For simple types, if they're equal return one, otherwise bottom
     (type-equal? t1 t2) t1
     :else bottom-type))
 
 (defn remove-type [union-t removed-t]
   (if (union-type? union-t)
-    (let [new-types (set/difference (:types union-t) 
+    (let [new-types (set/difference (:types union-t)
                                     (if (union-type? removed-t)
                                       (:types removed-t)
                                       #{removed-t}))]
@@ -112,7 +112,7 @@
       union-t)))
 
 (defn compatible-with-bool? [t]
-  (cond 
+  (cond
     (bool-type? t) true
     (int-type? t) true    ;; Non-zero is true
     (string-type? t) true ;; Non-empty is true
@@ -128,10 +128,14 @@
    'boolean? bool-type
    'string? string-type})
 
-;; Constraint Protocol
+;; Enhanced Constraint Protocol with negation support
 (defprotocol TypeConstraint
   (apply-constraint [this env is-positive])
+  (negate-constraint [this])
   (describe [this]))
+
+;; Forward declarations for mutually recursive constraint types
+(declare ->TypePredicate ->NegatedPredicate ->AndConstraint ->OrConstraint)
 
 ;; Variable Type Constraint
 (defrecord TypePredicate [var type]
@@ -145,10 +149,81 @@
         (assoc env (:var this) (remove-type var-type (:type this)))
         env)))
   
+  (negate-constraint [this]
+    (->NegatedPredicate (:var this) (:type this)))
+  
   (describe [this]
     (if (keyword? (:type this))
       (str (:var this) " is " (name (:type this)))
       (str (:var this) " is " (:type this)))))
+
+;; Negated Type Constraint
+(defrecord NegatedPredicate [var type]
+  TypeConstraint
+  (apply-constraint [this env is-positive]
+    (if is-positive
+      ;; When applying a negated constraint positively
+      (if-let [var-type (get env (:var this))]
+        (assoc env (:var this) (remove-type var-type (:type this)))
+        env)
+      ;; When applying a negated constraint negatively (double negation)
+      (if-let [var-type (get env (:var this))]
+        (assoc env (:var this) (intersect-types var-type (:type this)))
+        env)))
+  
+  (negate-constraint [this]
+    (->TypePredicate (:var this) (:type this)))
+  
+  (describe [this]
+    (if (keyword? (:type this))
+      (str (:var this) " is NOT " (name (:type this)))
+      (str (:var this) " is NOT " (:type this)))))
+
+;; AND Constraint (conjunction of constraints)
+(defrecord AndConstraint [constraints]
+  TypeConstraint
+  (apply-constraint [this env is-positive]
+    (if is-positive
+      ;; For AND, all constraints must be true
+      (reduce (fn [e constraint]
+                (apply-constraint constraint e true))
+              env
+              (:constraints this))
+      ;; For NOT(AND), at least one constraint must be false (De Morgan's Law)
+      ;; This is equivalent to OR(NOT(constraints))
+      (let [negated (->OrConstraint (mapv negate-constraint (:constraints this)))]
+        (apply-constraint negated env true))))
+  
+  (negate-constraint [this]
+    (->OrConstraint (mapv negate-constraint (:constraints this))))
+  
+  (describe [this]
+    (str "(" (clojure.string/join " AND " (map describe (:constraints this))) ")")))
+
+;; OR Constraint (disjunction of constraints)
+(defrecord OrConstraint [constraints]
+  TypeConstraint
+  (apply-constraint [this env is-positive]
+    (if is-positive
+      ;; For OR, at least one constraint must be true
+      ;; We can't precisely represent this in the environment, so we return a conservative approximation
+      ;; In a more advanced system, we might track multiple possible environments
+      (reduce (fn [e constraint]
+                (let [refined (apply-constraint constraint env true)]
+                  ;; Approximate with union of possible types
+                  (merge-with (fn [t1 t2] (union-type [t1 t2])) e refined)))
+              env
+              (:constraints this))
+      ;; For NOT(OR), all constraints must be false (De Morgan's Law)
+      ;; This is equivalent to AND(NOT(constraints))
+      (let [negated (->AndConstraint (mapv negate-constraint (:constraints this)))]
+        (apply-constraint negated env true))))
+  
+  (negate-constraint [this]
+    (->AndConstraint (mapv negate-constraint (:constraints this))))
+  
+  (describe [this]
+    (str "(" (clojure.string/join " OR " (map describe (:constraints this))) ")")))
 
 ;; Extract constraints from an expression
 (defn extract-predicate-constraint [expr]
@@ -158,11 +233,88 @@
       (when (symbol? (second expr))
         (->TypePredicate (second expr) type)))))
 
+;; Extract constraints from a complex expression including negation
+(defn extract-constraints [expr]
+  "Extract all type constraints from an expression with support for negation"
+  (cond
+    ;; Literal values - no constraints
+    (or (integer? expr) (string? expr) (boolean? expr))
+    []
+    
+    ;; Variable reference - no constraints
+    (symbol? expr)
+    []
+    
+    ;; Sequence expressions
+    (seq? expr)
+    (case (first expr)
+      ;; Direct 'not' application
+      not (cond
+            ;; Direct negation of a predicate
+            (and (seq? (second expr)) 
+                 (symbol? (first (second expr)))
+                 (get predicate-type-map (first (second expr))))
+            (if-let [inner-constraint (extract-predicate-constraint (second expr))]
+              [(negate-constraint inner-constraint)]
+              [])
+              
+            ;; Negation of a complex expression - use De Morgan's laws
+            (and (seq? (second expr)))
+            (case (first (second expr))
+              and (let [negated-parts (map #(list 'not %) (rest (second expr)))]
+                    (extract-constraints (cons 'or negated-parts)))
+              or (let [negated-parts (map #(list 'not %) (rest (second expr)))]
+                   (extract-constraints (cons 'and negated-parts)))
+              ;; Other cases, try to extract from inner parts
+              (mapcat extract-constraints (rest expr)))
+              
+            ;; Default case for negation
+            :else (mapcat extract-constraints (rest expr)))
+      
+      ;; 'and' expression - collect constraints from all parts
+      and (let [constraints (mapcat extract-constraints (rest expr))]
+            (if (> (count constraints) 1)
+              [(->AndConstraint (vec constraints))]
+              constraints))
+      
+      ;; 'or' expression - collect constraints from all parts
+      or (let [constraints (mapcat extract-constraints (rest expr))]
+           (if (> (count constraints) 1)
+             [(->OrConstraint (vec constraints))]
+             constraints))
+      
+      ;; If expression - extract constraints from condition
+      if (extract-constraints (second expr))
+      
+      ;; Type predicate application
+      (if-let [pred-constraint (extract-predicate-constraint expr)]
+        [pred-constraint]
+        
+        ;; For other expressions, extract from all parts
+        (mapcat extract-constraints (rest expr))))
+    
+    ;; Default - no constraints
+    :else []))
+
 ;; Macros for boolean operations
 (def macros
-  {'and (fn [x y] (list 'if x y false))
-   'or  (fn [x y] (list 'if x true y))
-   'not (fn [x]   (list 'if x false true))})
+  {'and (fn [& args]
+          (if (empty? args)
+            true
+            (if (= (count args) 1)
+              (first args)
+              (list 'if (first args)
+                    (apply (get macros 'and) (rest args))
+                    false))))
+   'or  (fn [& args]
+          (if (empty? args)
+            false
+            (if (= (count args) 1)
+              (first args)
+              (list 'if (first args)
+                    true
+                    (apply (get macros 'or) (rest args))))))
+   'not (fn [x] (list 'if x false true))})
 
 ;; Simple macroexpander - does one level of expansion
 (defn expand-1 [form]
@@ -184,32 +336,6 @@
       ;; Expansion occurred, so recurse on the expanded form
       (expand-all expanded))))
 
-;;;; Type Requirements Analysis ;;;;
-
-(defn extract-constraints [expr]
-  "Extract all type constraints from an expression"
-  (cond
-    ;; Literal values - no constraints
-    (or (integer? expr) (string? expr) (boolean? expr))
-    []
-    
-    ;; Variable reference - no constraints
-    (symbol? expr)
-    []
-    
-    ;; Type predicate application
-    :else
-    (if-let [pred-constraint (extract-predicate-constraint expr)]
-      [pred-constraint]
-      (if (seq? expr)
-        (case (first expr)
-          ;; If expression - extract constraints from condition
-          if (extract-constraints (second expr))
-          
-          ;; For other function applications, extract from arguments
-          (mapcat extract-constraints (rest expr)))
-        []))))
-
 ;; Control Flow Analysis
 (defprotocol ControlFlowAnalysis
   (analyze-branches [this env])
@@ -218,9 +344,20 @@
 (defrecord IfBranch [condition then-expr else-expr]
   ControlFlowAnalysis
   (analyze-branches [this env]
-    (let [constraints (extract-constraints (:condition this))
-          then-env (reduce #(apply-constraint %2 %1 true) env constraints)
-          else-env (reduce #(apply-constraint %2 %1 false) env constraints)]
+    (let [;; First expand any macros in the condition
+          expanded-condition (expand-all (:condition this))
+          ;; Extract constraints from the expanded condition
+          constraints (extract-constraints expanded-condition)
+          ;; Apply constraints positively for then branch
+          then-env (reduce (fn [e constraint]
+                             (apply-constraint constraint e true))
+                           env 
+                           constraints)
+          ;; Apply constraints negatively for else branch
+          else-env (reduce (fn [e constraint]
+                             (apply-constraint constraint e false))
+                           env 
+                           constraints)]
       [{:branch-name "then" :env then-env :expr (:then-expr this)}
        {:branch-name "else" :env else-env :expr (:else-expr this)}]))
   
@@ -258,7 +395,7 @@
     (symbol? expr) (if-let [t (get env expr)]
                      t
                      (throw (ex-info (str "Unbound variable: " expr)
-                                     {:expr expr :env env})))
+                                    {:expr expr :env env})))
 
     ;; Let expression: (let [x e1] e2)
     (and (seq? expr) (= (first expr) 'let))
@@ -286,12 +423,14 @@
     (let [condition (nth expr 1)
           then-expr (nth expr 2)
           else-expr (nth expr 3 nil)
-          condition-type (typecheck env condition)
-          if-branch (->IfBranch condition then-expr else-expr)]
+          ;; First expand any macros in the condition
+          expanded-condition (expand-all condition)
+          condition-type (typecheck env expanded-condition)
+          if-branch (->IfBranch expanded-condition then-expr else-expr)]
       (if (compatible-with-bool? condition-type)
         (result-type if-branch env)
         (throw (ex-info "Condition must be a boolean-compatible type"
-                        {:expr condition :type condition-type}))))
+                       {:expr condition :type condition-type}))))
     
     ;; Function application: (f arg1 arg2 ...)
     (and (seq? expr) (not-empty expr))
@@ -308,13 +447,13 @@
               < bool-type
               > bool-type
               + (if (and (subtype? arg1-type int-type)
-                         (subtype? arg2-type int-type))
-                  int-type
-                  (throw (ex-info "Arguments to + must be numbers"
-                                 {:arg1-type arg1-type
-                                  :arg2-type arg2-type})))))
+                        (subtype? arg2-type int-type))
+                 int-type
+                 (throw (ex-info "Arguments to + must be numbers"
+                                {:arg1-type arg1-type
+                                 :arg2-type arg2-type})))))
           (throw (ex-info (str fn-expr " requires exactly 2 arguments") 
-                        {:expr expr})))
+                         {:expr expr})))
         
         ;; For all other function applications
         :else
@@ -335,7 +474,7 @@
                            :fn-type fn-type}))))))
 
     :else (throw (ex-info (str "Unsupported expression: " expr)
-                          {:expr expr}))))
+                         {:expr expr}))))
 
 ;;;; Testing and Analysis ;;;;
 
@@ -355,9 +494,9 @@
         (println "  Details:" (ex-data e))
         nil))))
 
-;; Test examples
+;; Test examples with negation
 (defn test-occurrence-typing []
-  (println "\n=== GENERALIZED OCCURRENCE TYPING TESTS ===\n")
+  (println "\n=== GENERALIZED OCCURRENCE TYPING WITH NEGATION TESTS ===\n")
   
   ;; Basic type predicate
   (analyze-expr '(let [x (union 42 "hello")]
@@ -365,19 +504,56 @@
                      (string-length x)
                      0)))
   
-  ;; Compound expressions
+  ;; Direct negation with not
+  (analyze-expr '(let [x (union 42 "hello" true)]
+                   (if (not (string? x))
+                     "not a string"
+                     (string-length x))))
+  
+  ;; Compound expressions with OR
   (analyze-expr '(let [x (union 42 "hello" true)]
                    (if (or (number? x) (string? x))
                      "number or string"
                      "boolean")))
   
-  ;; Nested refinements
+  ;; Compound expressions with AND
   (analyze-expr '(let [x (union 42 "hello" true)]
-                   (if (string? x)
+                   (if (and (string? x) (not (boolean? x)))
                      (string-length x)
-                     (if (number? x)
-                       (+ x 10)
-                       "must be boolean"))))
+                     "not a valid string")))
+  
+  ;; Complex nested boolean expressions
+  (analyze-expr '(let [x (union 42 "hello" true)]
+                   (if (or (number? x) 
+                           (and (string? x) (not (boolean? x))))
+                     "valid input"
+                     "invalid input")))
+  
+  ;; Nested refinements with negation
+  (analyze-expr '(let [x (union 42 "hello" true)]
+                   (if (not (or (number? x) (boolean? x)))
+                     (string-length x)  ;; must be a string here
+                     "not a string")))
+
+  ;; NEW: Multiple arguments for AND
+  (analyze-expr '(let [x (union 42 "hello" true)]
+                   (if (and (not (boolean? x)) (not (number? x)) (string? x))
+                     (string-length x)
+                     0)))
+
+  ;; NEW: Multiple arguments for OR
+  (analyze-expr '(let [x (union 42 "hello" true false)]
+                   (if (or (number? x) (string? x) (boolean? x))
+                     "known type"
+                     "unknown type")))
+                     
+  ;; NEW: Complex nested expression with multiple arguments
+  (analyze-expr '(let [x (union 42 "hello" true)]
+                   (if (and (not (number? x)) 
+                            (or (string? x) (boolean? x))
+                            (not (and (boolean? x) (string? x))))
+                     "valid refined type"
+                     "invalid type")))
   
   (println "\nTests completed."))
 
