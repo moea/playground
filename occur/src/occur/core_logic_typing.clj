@@ -257,7 +257,16 @@
       ;; Direct 'not' application to predicate
       not (if-let [pred (extract-predicate (second expr))]
             [{:op :not :var (:var pred) :type (:type pred)}]
-            (mapcat extract-constraints (rest expr)))
+            ;; Recursively extract from the inner expression
+            (let [inner-constraints (extract-constraints (second expr))]
+              ;; Negate each constraint
+              (mapv (fn [c] 
+                      (case (:op c)
+                        :is {:op :not :var (:var c) :type (:type c)}
+                        :not {:op :is :var (:var c) :type (:type c)}
+                        ;; For complex constraints, let the boolean solver handle them
+                        c))
+                    inner-constraints)))
 
       ;; 'and' expression
       and (let [inner-constraints (mapcat extract-constraints (rest expr))]
@@ -271,8 +280,25 @@
              [{:op :or :constraints inner-constraints}]
              inner-constraints))
 
-      ;; If expression - extract from condition
-      if (extract-constraints (second expr))
+      ;; If expression with special pattern for negation
+      if (if (and (= (count expr) 4)
+                (= (nth expr 2) false)
+                (= (nth expr 3) true))
+           ;; This is (if X false true) which is equivalent to (not X)
+           (let [condition (second expr)
+                 pred (extract-predicate condition)]
+             (if pred
+               [{:op :not :var (:var pred) :type (:type pred)}]
+               ;; Recursively extract and negate
+               (let [inner-constraints (extract-constraints condition)]
+                 (mapv (fn [c] 
+                         (case (:op c)
+                           :is {:op :not :var (:var c) :type (:type c)}
+                           :not {:op :is :var (:var c) :type (:type c)}
+                           c))
+                       inner-constraints))))
+           ;; Normal if - just extract from condition
+           (extract-constraints (second expr)))
 
       ;; Type predicate
       (if-let [pred (extract-predicate expr)]
@@ -527,16 +553,16 @@
 
         ;; Check condition type
         condition-type (typecheck env expanded-condition)
-
+        
         ;; Check if there's an equality expression that needs special handling
         has-equality (and (seq? expanded-condition)
-                          (= (count expanded-condition) 3)
-                          (= (first expanded-condition) '=))
-
-        ;; Use the boolean constraint solver
-        then-env (try
+                        (= (count expanded-condition) 3)
+                        (= (first expanded-condition) '=))
+        
+        ;; Use the boolean constraint solver directly - it will handle the normalization
+        then-env (try 
                    (boolean-constraint-solver env expanded-condition true)
-                   (catch Exception e
+                   (catch Exception e 
                      (println "Warning: Boolean solver failed for then branch:" (.getMessage e))
                      ;; Special handling for equality expressions
                      (if has-equality
@@ -548,9 +574,9 @@
                            (assoc env var bool-type)
                            env))
                        env)))
-        else-env (try
-                   (boolean-constraint-solver env expanded-condition false)
-                   (catch Exception e
+        else-env (try 
+                   (boolean-constraint-solver env expanded-condition false) 
+                   (catch Exception e 
                      (println "Warning: Boolean solver failed for else branch:" (.getMessage e))
                      ;; Special handling for equality expressions
                      (if has-equality
@@ -562,14 +588,14 @@
                            (assoc env var bool-type)
                            env))
                        env)))
-
+        
         ;; Typecheck each branch
         then-type (typecheck then-env then-expr)
         else-type (if else-expr (typecheck else-env else-expr) nil)]
     (if (compatible-with-bool? condition-type)
       (union-type (remove nil? [then-type else-type]))
       (throw (ex-info "Condition must be a boolean-compatible type"
-                      {:expr condition :type condition-type})))))
+                     {:expr condition :type condition-type})))))
 
 ;; Enhanced analysis function using boolean constraint solver
 (defn analyze-expr-boolean [expr]
@@ -612,7 +638,12 @@
                                         (and (boolean? x) (not (= x false)))))
                              "refined correctly"
                              "fallback")))
-
+                             
+  ;; Triple negation test - should properly handle 
+  (analyze-expr-boolean '(let [x (union 42 "hello" true)]
+                           (if (not (not (not (string? x))))
+                             "triple negation"
+                             (string-length x))))
 
   (println "\nBoolean constraint tests completed."))
 

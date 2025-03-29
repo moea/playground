@@ -41,15 +41,20 @@
 (defn make-negation [formula]
   (cond
     ;; Double negation elimination
-    (instance? Negation formula) (:formula formula)
-
+    (instance? Negation formula) 
+    (:formula formula)
+    
     ;; De Morgan's laws
     (instance? Conjunction formula)
     (make-disjunction (map make-negation (:clauses formula)))
-
+    
     (instance? Disjunction formula)
     (make-conjunction (map make-negation (:clauses formula)))
-
+    
+    ;; Boolean literals
+    (= formula true) false
+    (= formula false) true
+    
     ;; Primitive
     :else (->Negation formula)))
 
@@ -58,37 +63,38 @@
 
 ;;; ---- Boolean Formula Conversions ----
 
-;; Convert to Negation Normal Form (NNF) - negations only at atoms
+;; Convert to Negation Normal Form (only Ands, Ors and Nots around literals)
 (defn to-nnf [formula]
   (cond
-    ;; Primitive cases
-    (true? formula) true
-    (false? formula) false
-    (instance? TypeConstraint formula) formula
-
-    ;; Negation - push down using De Morgan's laws
+    ;; Primitives pass through
+    (or (true? formula) (false? formula) (instance? TypeConstraint formula))
+    formula
+    
+    ;; Push negation inward
     (instance? Negation formula)
     (let [inner (:formula formula)]
       (cond
+        ;; Double negation elimination - handle nested cases better
+        (instance? Negation inner) 
+        (recur (to-nnf (:formula inner))) ; Recur to handle triple or more negations
+        
+        ;; De Morgan's laws
         (instance? Conjunction inner)
         (make-disjunction (map (comp to-nnf make-negation) (:clauses inner)))
-
+        
         (instance? Disjunction inner)
         (make-conjunction (map (comp to-nnf make-negation) (:clauses inner)))
-
-        (instance? Negation inner)
-        (to-nnf (:formula inner))
-
-        ;; Primitive negation
+        
+        ;; Negation of primitive
         :else (make-negation (to-nnf inner))))
-
-    ;; Complex cases
+    
+    ;; Recursively convert composite formulas
     (instance? Conjunction formula)
     (make-conjunction (map to-nnf (:clauses formula)))
-
+    
     (instance? Disjunction formula)
     (make-disjunction (map to-nnf (:clauses formula)))
-
+    
     :else formula))
 
 ;; Convert formula to Conjunctive Normal Form (CNF)
@@ -347,17 +353,10 @@
                 (or (boolean? (nth expr 2)) (nil? (nth expr 2))))
           ;; Handle (= x true/false/nil) expressions
           (let [var (second expr)
-                val (nth expr 2)
-                type-val (cond
-                           (true? val) :bool
-                           (false? val) :bool
-                           (nil? val) :nil)]
+                val (nth expr 2)]
             (if (boolean? val)
-              (if (true? val)
-                ;; (= x true) is equivalent to (boolean? x) && x
-                (make-type-constraint var :bool)
-                ;; (= x false) is equivalent to (boolean? x) && !x
-                (make-type-constraint var :bool))
+              ;; Both true and false constrain to boolean type
+              (make-type-constraint var :bool)
               ;; (= x nil) is equivalent to (nil? x)
               (make-type-constraint var :nil)))
           ;; Other equality expressions - we don't extract constraints
@@ -410,8 +409,7 @@
                            (when (and (= (count expr) 3)
                                       (symbol? (second expr))
                                       (boolean? (nth expr 2)))
-                             (let [var (second expr)
-                                   val (nth expr 2)]
+                             (let [var (second expr)]
                                ;; Both true and false checks just constrain to boolean type
                                ;; For more sophisticated handling, we'd need to track the exact boolean value
                                (make-type-constraint var :bool))))}
