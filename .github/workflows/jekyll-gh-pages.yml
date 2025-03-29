@@ -18,9 +18,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  defaults:
-    run:
-      working-directory: pages
   build:
     runs-on: ubuntu-latest
     steps:
@@ -37,9 +34,10 @@ jobs:
         run: bundle exec jekyll build
         env:
           JEKYLL_ENV: production
+        working-directory: pages
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
-
+        working-directory: pages
   deploy:
     environment:
       name: github-pages
