@@ -37,7 +37,6 @@ jobs:
         working-directory: pages
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
-        working-directory: pages
   deploy:
     environment:
       name: github-pages
