@@ -1,0 +1,34 @@
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {%- seo -%}
+  <link rel="stylesheet" href="{{ "/assets/main.css" | relative_url }}">
+  {%- feed_meta -%}
+  {%- if jekyll.environment == 'production' and site.google_analytics -%}
+    {%- include google-analytics.html -%}
+  {%- endif -%}
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Lato:ital,wght@0,100;0,300;0,400;0,700;0,900;1,100;1,300;1,400;1,700;1,900&family=Noto+Sans+Mono:wght@100..900&display=swap" rel="stylesheet">
+  <style type="text/css">
+    body {
+        font-family: Lato, sans-serif;
+    }
+
+    .highlighter-rouge .highlight, code {
+        background-color: #fdfdfd;
+        border: none;
+        padding-left: 0;
+        padding-right: 0;
+    }
+
+    .post-content h1:first-child {
+        display: none;
+    }
+
+    code {
+        font-family: "Noto Sans Mono", monospace;
+    }
+  </style>
+</head>

@@ -1,0 +1,25 @@
+title: Type Playground
+email: moe.aboulkheir@gmail.com
+description: >-
+  Experiments with types, type systems & related topics.
+baseurl: "/playground/"
+url: "https://moea.github.com/"
+
+# Build settings
+theme: minima
+plugins:
+  - jekyll-feed
+  - jekyll-seo-tag
+
+# Exclude from processing
+exclude:
+  - .sass-cache/
+  - .jekyll-cache/
+  - gemfiles/
+  - Gemfile
+  - Gemfile.lock
+  - node_modules/
+  - vendor/bundle/
+  - vendor/cache/
+  - vendor/gems/
+  - vendor/ruby/ 

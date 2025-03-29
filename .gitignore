@@ -1,0 +1,14 @@
+# Jekyll build output
+_site/
+.sass-cache/
+.jekyll-cache/
+.jekyll-metadata
+
+# Ruby dependencies
+.bundle/
+vendor/
+
+# Environment normalization
+.DS_Store
+.env
+Thumbs.db 
