@@ -214,7 +214,7 @@
                   (< x))
           env (setup-test-env)]
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"expects 2 arguments but got 1"
-                          (typing/typecheck env expr))
+                            (typing/typecheck env expr))
           "Should throw exception when < has too few arguments")))
 
   (testing "Addition with too many arguments"
@@ -224,7 +224,7 @@
                   (+ x y z))
           env (setup-test-env)]
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"expects 2 arguments but got 3"
-                          (typing/typecheck env expr))
+                            (typing/typecheck env expr))
           "Should throw exception when + has too many arguments")))
 
   (testing "Equality with wrong number of arguments"
@@ -232,7 +232,7 @@
                   (= x))
           env (setup-test-env)]
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"expects 2 arguments but got 1"
-                          (typing/typecheck env expr))
+                            (typing/typecheck env expr))
           "Should throw exception when = has wrong number of arguments")))
 
   (testing "Type mismatch in binary operator"
@@ -241,8 +241,19 @@
                   (+ x y))
           env (setup-test-env)]
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"type mismatch"
-                          (typing/typecheck env expr))
+                            (typing/typecheck env expr))
           "Should throw exception when arguments have incompatible types"))))
+
+(deftest test-multi-arg-unification
+  (testing "Type unification via equality"
+    (let [expr '(let [x (union :int :string)
+                      y (union :int :bool)]
+                  (if (= x y)
+                    (< x y)  ;; x and y must both be :int here
+                    "Incorrect path"))
+          result (typing/typecheck (setup-test-env) expr)]
+      (is (= result #{:string :bool})
+          "In the then branch, x and y are both :int, giving :bool; in the else branch, we get :string"))))
 
 (deftest test-type-refinement-failures
   (testing "Type error when using non-number type with addition"
@@ -250,7 +261,7 @@
                   (+ x "not a number"))
           env (setup-test-env)]
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"type mismatch"
-                          (typing/typecheck env expr))
+                            (typing/typecheck env expr))
           "Should throw exception for non-number in addition")))
 
   (testing "Type error when applying a non-function"
@@ -258,7 +269,7 @@
                   (x 10))
           env (setup-test-env)]
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Applying a non-function"
-                          (typing/typecheck env expr))
+                            (typing/typecheck env expr))
           "Should throw exception when applying a non-function"))))
 
 (deftest test-type-refinement-with-comparisons
@@ -632,12 +643,12 @@
 
       ;; Test addition with wrong number of args
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"expects 2 arguments but got 3"
-                          (typing/typecheck env '(+ int1 int2 int1)))
+                            (typing/typecheck env '(+ int1 int2 int1)))
           "Addition with more than 2 arguments should throw an error")
 
       ;; Test addition with wrong types
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"type mismatch"
-                          (typing/typecheck env '(+ int1 str1)))
+                            (typing/typecheck env '(+ int1 str1)))
           "Addition with non-number should throw an error")
 
       ;; Test comparison with exactly 2 args
@@ -654,37 +665,5 @@
 
       ;; Test comparison with wrong number of args
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"expects 2 arguments but got 1"
-                          (typing/typecheck env '(< int1)))
+                            (typing/typecheck env '(< int1)))
           "Comparison with fewer than 2 arguments should throw an error"))))
-
-;; Run all tests
-(defn test-ns-hook []
-  (test-simple-predicates)
-  (test-compound-predicates)
-  (test-complex-predicates)
-  (test-multiple-args-in-boolean-ops)
-  (test-triple-negation)
-  (test-complex-case)
-  (test-equality-predicates)
-  (test-function-application)
-  (test-multi-argument-functions)
-  (test-binary-operator-errors)
-  (test-type-refinement-failures)
-  (test-type-refinement-with-comparisons)
-  (test-subtyping)
-  (test-type-operations)
-  (test-type-predicates)
-  (test-union-types-helper)
-  (test-compatible-with-bool)
-  (test-init-env)
-  (test-boolean-formula-constructors)
-  (test-formula-type-predicates)
-  (test-to-nnf)
-  (test-extract-predicate)
-  (test-extract-formula)
-  (test-refine-env)
-  (test-apply-constraint)
-  (test-merge-environments)
-  (test-apply-formula)
-  (test-typecheck-if-enhanced)
-  (test-fixed-arity-operators))

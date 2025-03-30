@@ -314,8 +314,13 @@
                          (and (not (symbol? (first args))) (symbol? (second args)))
                          {:var (second args),
                           :literal (first args)}
+                         
+                         ;; var = var - handle variable-to-variable equality
+                         (and (symbol? (first args)) (symbol? (second args)))
+                         {:var1 (first args),
+                          :var2 (second args)}
 
-                         ;; var = var or other cases not handled
+                         ;; other cases not handled
                          :else nil)))}})
 
 ;; Helper function to detect primitive type of a literal
@@ -349,9 +354,21 @@
             (conjunction (mapv #(type-constraint % (:type pred-info)) extract-result))
 
             ;; Special case for equality with literals
-            (and (map? extract-result) (= (:type pred-info) :dynamic))
+            (and (map? extract-result) 
+                 (= (:type pred-info) :dynamic)
+                 (:var extract-result))
             (when-let [var-type (literal-type (:literal extract-result))]
               (type-constraint (:var extract-result) var-type))
+              
+            ;; Special case for equality between two variables
+            (and (map? extract-result)
+                 (= (:type pred-info) :dynamic)
+                 (:var1 extract-result)
+                 (:var2 extract-result))
+            (let [var1 (:var1 extract-result)
+                  var2 (:var2 extract-result)]
+              ;; Create a constraint that will be handled by apply-constraint
+              {:eq-vars [var1 var2]})
 
             ;; Default case
             :else nil))))))
@@ -456,9 +473,32 @@
 (defn apply-constraint
   "Apply a type constraint to the environment."
   [env constraint positive?]
-  (if (type-constraint? constraint)
+  (cond
+    ;; Standard type constraint
+    (type-constraint? constraint)
     (refine-env env (:var constraint) (:type constraint) positive?)
-    env))
+    
+    ;; Equality between two variables - find common type
+    (and (map? constraint) (:eq-vars constraint))
+    (let [[var1 var2] (:eq-vars constraint)
+          type1 (get env var1)
+          type2 (get env var2)]
+      (if (and type1 type2 positive?)
+        ;; In positive context (equality is true), both vars must have the same type
+        ;; so we refine each to their common type (intersection)
+        (let [common-type (intersect-types type1 type2)]
+          (if (= common-type bottom-type)
+            ;; If no common type, return unchanged environment (this path is unreachable)
+            env
+            ;; Otherwise refine both variables
+            (-> env
+                (assoc var1 common-type)
+                (assoc var2 common-type))))
+        ;; In negative context (equality is false), we don't refine the types
+        env))
+    
+    ;; Default case
+    :else env))
 
 ;; Merge multiple environments
 (defn merge-environments
@@ -481,6 +521,7 @@
   (cond
     (or (true? formula) (false? formula)) :constant
     (type-constraint? formula) :type
+    (and (map? formula) (:eq-vars formula)) :eq-vars
     (negation? formula) :negation
     (conjunction? formula) :conjunction
     (disjunction? formula) :disjunction
@@ -493,6 +534,10 @@
 
    ;; Type constraints
    :type       (fn [env formula positive?]
+                 (apply-constraint env formula positive?))
+                 
+   ;; Equality between variables
+   :eq-vars    (fn [env formula positive?]
                  (apply-constraint env formula positive?))
 
    ;; Negation - invert positive flag
@@ -572,9 +617,9 @@
     ;; Verify condition type is compatible with boolean
     (when-not (compatible-with-bool? condition-type)
       (throw (ex-info "If condition must be boolean compatible"
-                      {:expr condition
-                       :type condition-type})))
-
+                     {:expr condition
+                      :type condition-type})))
+    
     ;; Extract constraint formula from condition
     (let [formula (extract-formula condition)
           ;; Compute types of branches with refined environments
@@ -586,7 +631,7 @@
                      env)
           then-type (if then-expr (typecheck then-env then-expr) nil)
           else-type (if else-expr (typecheck else-env else-expr) nil)]
-
+      
       ;; Determine result type based on branch types
       (cond
         (nil? then-type) else-type
