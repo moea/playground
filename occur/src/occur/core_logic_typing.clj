@@ -34,7 +34,7 @@
       (set? other) (contains? other this)
       ;; Otherwise not a subtype
       :else false))
-  
+
   (intersect [this other]
     (cond
       ;; Intersection with itself returns itself
@@ -45,7 +45,7 @@
       (set? other) (if (contains? other this) this bottom-type)
       ;; Different primitive types have empty intersection
       :else bottom-type))
-  
+
   (subtract [this other]
     (cond
       ;; Subtracting itself gives bottom
@@ -70,7 +70,7 @@
       (and (= (count this) 1) (is-subtype? (first this) other)) true
       ;; Otherwise not a subtype
       :else false))
-  
+
   (intersect [this other]
     (cond
       ;; Intersection with any returns this
@@ -79,28 +79,28 @@
       (keyword? other) (if (contains? this other) other bottom-type)
       ;; If other is a set, take the intersection of the sets
       (set? other) (let [result (set/intersection this other)]
-                     (if (empty? result) 
-                       bottom-type 
+                     (if (empty? result)
+                       bottom-type
                        (if (= (count result) 1)
                          (first result)
                          result)))
       ;; Default case
       :else bottom-type))
-  
+
   (subtract [this other]
     (cond
       ;; Subtracting :any gives bottom
       (= other any-type) bottom-type
       ;; Subtracting a primitive type
       (keyword? other) (let [result (disj this other)]
-                         (if (empty? result) 
+                         (if (empty? result)
                            bottom-type
                            (if (= (count result) 1)
                              (first result)
                              result)))
       ;; Subtracting a set
       (set? other) (let [result (set/difference this other)]
-                     (if (empty? result) 
+                     (if (empty? result)
                        bottom-type
                        (if (= (count result) 1)
                          (first result)
@@ -119,7 +119,7 @@
   (subtract t1 t2))
 
 ;; Remaining type constructors and utility functions with minor adjustments
-(defn union-type 
+(defn union-type
   "Create a union type from a collection of types.
    Can be called with either a collection or multiple arguments."
   [types & more-types]
@@ -165,7 +165,7 @@
   {:constraint :type, :var var, :type type})
 
 ;; Boolean Operators
-(defn conjunction 
+(defn conjunction
   "Create a conjunction (logical AND) of clauses.
    Handles special cases like empty conjunctions and singleton conjunctions."
   [clauses]
@@ -183,7 +183,7 @@
               (first filtered)
               {:constraint :conjunction, :clauses filtered}))))
 
-(defn disjunction 
+(defn disjunction
   "Create a disjunction (logical OR) of clauses.
    Handles special cases like empty disjunctions and singleton disjunctions."
   [clauses]
@@ -201,7 +201,7 @@
               (first filtered)
               {:constraint :disjunction, :clauses filtered}))))
 
-(defn negation 
+(defn negation
   "Create a negation (logical NOT) of a formula.
    Handles double negation and constants."
   [formula]
@@ -217,59 +217,57 @@
 
 ;; Boolean Constraint Predicates
 (defn type-constraint? [formula]
-  (and (map? formula) (= (:constraint formula) :type)))
+  (= (:constraint formula) :type))
 
 (defn conjunction? [formula]
-  (and (map? formula) (= (:constraint formula) :conjunction)))
+  (= (:constraint formula) :conjunction))
 
 (defn disjunction? [formula]
-  (and (map? formula) (= (:constraint formula) :disjunction)))
+  (= (:constraint formula) :disjunction))
 
 (defn negation? [formula]
-  (and (map? formula) (= (:constraint formula) :negation)))
+  (= (:constraint formula) :negation))
 
 ;; Boolean Formula Normalization
-(defn to-nnf 
+(defn to-nnf
   "Convert a formula to Negation Normal Form (NNF).
    In NNF, negations only appear directly in front of atomic formulas."
   [formula]
   (cond
     ;; Constants and atomic constraints remain unchanged
-    (or (true? formula) (false? formula) (type-constraint? formula)) 
+    (or (true? formula) (false? formula) (type-constraint? formula))
     formula
-    
+
     ;; Process negations according to NNF rules
     (negation? formula)
     (let [inner (:formula formula)]
       (cond
         ;; Negation of constants
-        (true? inner) false
+        (true?  inner) false
         (false? inner) true
-        
-        ;; Negation of atomic constraint
         (type-constraint? inner) formula
-        
-        ;; De Morgan's laws: ¬(A ∧ B) ≡ ¬A ∨ ¬B 
+
+        ;; De Morgan's laws: ¬(A ∧ B) ≡ ¬A ∨ ¬B
         (conjunction? inner)
-        (to-nnf (disjunction (mapv #(negation %) (:clauses inner))))
-        
+        (to-nnf (disjunction (mapv negation (:clauses inner))))
+
         ;; De Morgan's laws: ¬(A ∨ B) ≡ ¬A ∧ ¬B
         (disjunction? inner)
-        (to-nnf (conjunction (mapv #(negation %) (:clauses inner))))
-        
+        (to-nnf (conjunction (mapv negation (:clauses inner))))
+
         ;; Double negation elimination: ¬¬A ≡ A
         (negation? inner)
         (to-nnf (:formula inner))))
-    
+
     ;; Process conjunctions and disjunctions recursively
     (conjunction? formula)
     (let [new-clauses (mapv to-nnf (:clauses formula))]
       (conjunction new-clauses))
-    
+
     (disjunction? formula)
     (let [new-clauses (mapv to-nnf (:clauses formula))]
       (disjunction new-clauses))
-    
+
     ;; Default case
     :else formula))
 
@@ -284,39 +282,39 @@
    'number? {:type int-type, :extract-fn (fn [expr] (second expr))}
    'string? {:type string-type, :extract-fn (fn [expr] (second expr))}
    'boolean? {:type bool-type, :extract-fn (fn [expr] (second expr))}
-   
+
    ;; Comparison operators
-   '< {:type int-type, 
-       :extract-fn (fn [expr] 
+   '< {:type int-type,
+       :extract-fn (fn [expr]
                      (let [vars (filter symbol? (rest expr))]
                        (when (seq vars)
                          (if (= (count vars) 1)
                            (first vars)
                            vars))))}
-   
-   '> {:type int-type, 
-       :extract-fn (fn [expr] 
+
+   '> {:type int-type,
+       :extract-fn (fn [expr]
                      (let [vars (filter symbol? (rest expr))]
                        (when (seq vars)
                          (if (= (count vars) 1)
                            (first vars)
                            vars))))}
-   
+
    ;; Equality operator is special - type depends on the literal
-   '= {:type :dynamic, 
+   '= {:type :dynamic,
        :extract-fn (fn [expr]
                      (let [args (rest expr)]
                        (cond
                          ;; var = literal
                          (and (symbol? (first args)) (not (symbol? (second args))))
-                         {:var (first args), 
+                         {:var (first args),
                           :literal (second args)}
-                         
+
                          ;; literal = var
                          (and (not (symbol? (first args))) (symbol? (second args)))
-                         {:var (second args), 
+                         {:var (second args),
                           :literal (first args)}
-                         
+
                          ;; var = var or other cases not handled
                          :else nil)))}})
 
@@ -329,7 +327,7 @@
     :else nil))
 
 ;; Extract a predicate from an expression
-(defn extract-predicate 
+(defn extract-predicate
   "Extract type constraints from predicates and comparison expressions.
    Returns a type-constraint or conjunction of constraints, or nil if not applicable."
   [expr]
@@ -339,22 +337,22 @@
         (let [extract-result ((:extract-fn pred-info) expr)]
           (cond
             ;; No variables found
-            (nil? extract-result) 
+            (nil? extract-result)
             nil
-            
+
             ;; Single variable for standard predicates
             (and (symbol? extract-result) (not= (:type pred-info) :dynamic))
             (type-constraint extract-result (:type pred-info))
-            
+
             ;; Multiple variables for comparison operators
             (and (sequential? extract-result) (not= (:type pred-info) :dynamic))
             (conjunction (mapv #(type-constraint % (:type pred-info)) extract-result))
-            
+
             ;; Special case for equality with literals
             (and (map? extract-result) (= (:type pred-info) :dynamic))
             (when-let [var-type (literal-type (:literal extract-result))]
               (type-constraint (:var extract-result) var-type))
-            
+
             ;; Default case
             :else nil))))))
 
@@ -362,21 +360,21 @@
 ;; Break formula extraction into smaller, specialized helper functions
 
 ;; Extract formula from a boolean operation (and, or, not)
-(defn extract-boolean-op-formula 
+(defn extract-boolean-op-formula
   "Extract formula from a boolean operation (and, or, not)"
   [op args]
   (case op
     not (when-let [inner (extract-formula (first args))]
           (negation inner))
-    
+
     and (let [inner-formulas (keep extract-formula args)]
           (when (seq inner-formulas)
             (conjunction inner-formulas)))
-    
+
     or (let [inner-formulas (keep extract-formula args)]
          (when (seq inner-formulas)
            (disjunction inner-formulas)))
-    
+
     ;; Not a boolean operation
     nil))
 
@@ -391,10 +389,10 @@
 (defn extract-general-formula
   "Extract formula from a general expression, trying predicates first"
   [expr args]
-  (or 
+  (or
    ;; First try to extract a predicate directly
    (extract-predicate expr)
-   
+
    ;; If not a recognized predicate, try to extract from arguments recursively
    (let [inner-formulas (keep extract-formula args)]
      (when (seq inner-formulas)
@@ -403,7 +401,7 @@
          (conjunction inner-formulas))))))
 
 ;; Main extract-formula function
-(defn extract-formula 
+(defn extract-formula
   "Extract a formula from an expression.
    Handles predicates, boolean operations, and nested expressions."
   [expr]
@@ -423,11 +421,11 @@
       (or
        ;; Try extracting from boolean operations
        (extract-boolean-op-formula op args)
-       
+
        ;; Try extracting from if expressions
        (when (= op 'if)
          (extract-if-formula args))
-       
+
        ;; Try extracting from general expressions
        (extract-general-formula expr args)))
 
@@ -439,7 +437,7 @@
 ;; Use a data-driven approach for formula application
 
 ;; Refine a variable's type in the environment
-(defn refine-env 
+(defn refine-env
   "Refine a variable's type in the environment based on a type constraint.
    Returns the updated environment or the original if no refinement is possible."
   [env var type positive?]
@@ -463,7 +461,7 @@
     env))
 
 ;; Merge multiple environments
-(defn merge-environments 
+(defn merge-environments
   "Merge multiple environments by taking the union of types for each variable."
   [base-env & envs]
   (if (empty? envs)
@@ -492,15 +490,15 @@
 (def formula-application-strategies
   {;; Constants - identity function
    :constant   (fn [env _ _] env)
-   
+
    ;; Type constraints
    :type       (fn [env formula positive?]
                  (apply-constraint env formula positive?))
-   
+
    ;; Negation - invert positive flag
    :negation   (fn [env formula positive?]
                  (apply-formula env (:formula formula) (not positive?)))
-   
+
    ;; Conjunction - apply each clause
    :conjunction (fn [env formula positive?]
                   (if positive?
@@ -512,7 +510,7 @@
                     ;; Conjunction in negative context - merge all branch environments
                     (apply merge-environments env
                            (map #(apply-formula env % false) (:clauses formula)))))
-   
+
    ;; Disjunction - compute for each branch
    :disjunction (fn [env formula positive?]
                   (if positive?
@@ -526,7 +524,7 @@
                             (:clauses formula))))})
 
 ;; Main formula application function
-(defn apply-formula 
+(defn apply-formula
   "Apply a boolean formula to an environment.
    Uses a data-driven approach to handle different formula types."
   [env formula positive?]
@@ -546,18 +544,18 @@
 (defn init-env []
   {;; Fixed arity functions
    'string-length (function-type [string-type] int-type)
-   
+
    ;; Operators with fixed arity of 2
    '< (function-type [int-type int-type] bool-type)  ;; Exactly 2 args
    '> (function-type [int-type int-type] bool-type)  ;; Exactly 2 args
    '= (function-type [any-type any-type] bool-type)  ;; Exactly 2 args
    '+ (function-type [int-type int-type] int-type)   ;; Exactly 2 args
-   
+
    ;; Boolean operators
    'and (function-type [bool-type bool-type] bool-type)
    'or (function-type [bool-type bool-type] bool-type)
    'not (function-type [bool-type] bool-type)
-   
+
    ;; Predicates
    'number? (function-type [any-type] bool-type)
    'string? (function-type [any-type] bool-type)
@@ -574,9 +572,9 @@
     ;; Verify condition type is compatible with boolean
     (when-not (compatible-with-bool? condition-type)
       (throw (ex-info "If condition must be boolean compatible"
-                     {:expr condition
-                      :type condition-type})))
-    
+                      {:expr condition
+                       :type condition-type})))
+
     ;; Extract constraint formula from condition
     (let [formula (extract-formula condition)
           ;; Compute types of branches with refined environments
@@ -588,7 +586,7 @@
                      env)
           then-type (if then-expr (typecheck then-env then-expr) nil)
           else-type (if else-expr (typecheck else-env else-expr) nil)]
-      
+
       ;; Determine result type based on branch types
       (cond
         (nil? then-type) else-type
@@ -679,13 +677,13 @@
             return-type (:return-type func-type)]
         ;; Check argument count
         (when (not= (count param-types) (count args))
-          (throw (ex-info (str (if (symbol? f) 
-                                  (str (name f) " operator") 
-                                  "Function")
-                              " expects " (count param-types) 
-                              " arguments but got " (count args))
-                         {:func f, :args args})))
-        
+          (throw (ex-info (str (if (symbol? f)
+                                 (str (name f) " operator")
+                                 "Function")
+                               " expects " (count param-types)
+                               " arguments but got " (count args))
+                          {:func f, :args args})))
+
         ;; Check argument types
         (doseq [[i [param-type arg-expr]] (map-indexed vector (map vector param-types args))]
           (let [arg-type (typecheck env arg-expr)]
@@ -693,18 +691,18 @@
               (throw (ex-info (str (if (symbol? f)
                                      (str "Argument " (inc i) " to " (name f))
                                      "Argument")
-                                  " type mismatch")
-                             {:expected param-type
-                              :actual arg-type
-                              :expr arg-expr})))))
-        
+                                   " type mismatch")
+                              {:expected param-type
+                               :actual arg-type
+                               :expr arg-expr})))))
+
         ;; Return the function's return type
         return-type)
-      
+
       ;; Not a function
       (throw (ex-info "Applying a non-function"
-                     {:expr f
-                      :type func-type})))))
+                      {:expr f
+                       :type func-type})))))
 
 ;; Main typecheck entry point
 (defn typecheck [env expr]
