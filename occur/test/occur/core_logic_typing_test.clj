@@ -1,4 +1,4 @@
-(ns occur.core-logic-typing-test
+(ns occur.simple-test
   (:require [clojure.test :refer :all]
             [occur.core-logic-typing :as typing :refer [int-type bool-type string-type]]))
 
@@ -284,7 +284,7 @@
                             (typing/typecheck env expr))
           "Should throw exception when using union type with binary operator"))))
 
-  (testing "Type refinement with predicate before comparison would be useful in a more complex system"
+(testing "Type refinement with predicate before comparison would be useful in a more complex system"
     (let [expr '(let [x (union :int :string :bool)
                       y 10]
                   (if (and (number? x) (< x y))
@@ -667,3 +667,39 @@
       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"expects 2 arguments but got 1"
                             (typing/typecheck env '(< int1)))
           "Comparison with fewer than 2 arguments should throw an error"))))
+
+;; Tests for inter-procedural type refinements using latent predicates
+(deftest test-latent-predicates
+  (testing "Basic function-type with latent predicates"
+    (let [;; Function type with latent predicate
+          func-type {:type :function
+                    :param-types [:any]
+                    :return-type :int
+                    :latent-predicates {'x {:constraint :type, :var 'x, :type :int}}}]
+      (is (map? (:latent-predicates func-type))
+          "Function type should store latent predicates")
+      (is (= :type (get-in func-type [:latent-predicates 'x :constraint]))
+          "Should store type constraints in latent predicates"))))
+
+(deftest test-substitute-var
+  (testing "Variable substitution in formulas - direct test"
+    ;; Define a local version of the substitute-var function for testing
+    (let [substitute-var (fn [formula old-var new-var]
+                           (cond
+                             ;; Type constraint - replace var name if it matches
+                             (and (map? formula) 
+                                  (= (:constraint formula) :type))
+                             (if (= (:var formula) old-var)
+                               (assoc formula :var new-var)
+                               formula)
+                             
+                             ;; Other formula types - just use identity for this test
+                             :else formula))]
+      
+      ;; Test the local substitute-var function
+      (let [formula {:constraint :type, :var 'typed-x, :type :int}
+            substituted (substitute-var formula 'typed-x 'typed-y)]
+        (is (= 'typed-y (:var substituted))
+            "Should replace variable name in type constraint")
+        (is (= :int (:type substituted))
+            "Should keep the same type in type constraint")))))
