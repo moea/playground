@@ -609,7 +609,7 @@ refine(and(ExprA, ExprB), InitialEnv, TrueEnv, FalseEnv) :- !,
 
 This is pretty intuitive, if you look at the variable placements.  We
 need to refine both subexpressions, and `EnvA_True` is the `Env` input
-to the second `refine`, the `true` output out which we unify with the final
+to the second `refine`, the `true` output of which we unify with the final
 `TrueEnv`.  We calculate `FalseEnv` with an `OR` across the the types
 in the `false` environments for both subexpressions, as either of them
 could be false.  Finally:
@@ -623,7 +623,7 @@ refine(or(ExprA, ExprB), InitialEnv, TrueEnv, FalseEnv) :- !,
 ```
 
 In contrast to `and`, there's nothing shared between the recursive
-`refine` calls, because we have no information about whether the first
+`refine` calls, because we've no information about whether the first
 test succeeded.  `TrueEnv` is the pairwise `union` of the types in the
 `true` environments --- we know one of them is true, and `FalseEnv` is
 the result of intersecting the `false` environments --- we know both
