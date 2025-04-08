@@ -103,13 +103,15 @@ expert.  Maybe something to explore in a future post.
 I went with [Disjunctive Normal
 Form](https://en.wikipedia.org/wiki/Disjunctive_normal_form) --- it's
 simple to implement, and subtyping is elegant --- _beautiful_, even.
-For those not completely into this horseshit, BDD and DNF are both
-representations of logical formulas, or, if you prefer, boolean
-functions.  Because of the correspondence between set-theoretic
-operations and those of boolean algebra --- if we think of types as
-sets of values, we can see why it might make sense to encode them as
-boolean functions.  This is in contrast to thinking about types _purely_
-algebraically, per my previous post: [Typechecking GADTs in
+But does have its shortcomings, which I'll discuss at the end of the
+article.  For those not completely into this horseshit, BDD and DNF
+are both representations of logical formulas, or, if you prefer,
+boolean functions.  Because of the correspondence between
+set-theoretic operations and those of boolean algebra --- if we think
+of types as sets of values, we can see why it might make sense to
+encode them as boolean functions.  This is in contrast to thinking
+about types _purely_ algebraically, per my previous post:
+[Typechecking GADTs in
 Clojure](http://localhost:4000/playground/clojure/gadt/static/typing/2025/03/29/gadt.html).
 
 In any case, you're not going to have to know very much about the
@@ -120,8 +122,7 @@ form, which is to say, it consists of disjunctions of conjunctions
 (unions types of intersection types), with the latter comprised of
 literals (symbolic type names, in our case) or their negations
 (negated, or complement types).  A term can simplify to a (possibly
-negated) literal.  We'll briefly discuss some of the limitations of the
-represetation at the end.
+negated) literal.
 
 ## The Little Type System That Could
 
