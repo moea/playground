@@ -143,9 +143,6 @@ Prolog** [click here](#literals).
 ```prolog
 :- module(dnf, [...]).
 
-:- use_module(library(ordsets)).
-:- use_module(library(apply)).
-
 basic_type(any).
 basic_type(nil).
 basic_type(number).
@@ -520,7 +517,6 @@ but that's about the long and short of it.  The full source [is here](https://gi
 ```prolog
 :- module(refinement, [...]).
 
-:- use_module(library(dicts)).
 :- use_module(dnf, [...]).
 
 
