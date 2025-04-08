@@ -228,16 +228,16 @@ are_disjoint(TA, TB) :-
     concrete(TA),
     concrete(TB),
 
-    (   disjoint_types(TA, TB)
-    ;   disjoint_types(TB, TA)
+    ( disjoint_types(TA, TB)
+    ; disjoint_types(TB, TA)
 
-    ;   subtype_of(TA, SuperA), SuperA \== TA,
-        (disjoint_types(SuperA, TB)
-        ; are_disjoint(SuperA, TB))
+    ; subtype_of(TA, SuperA), SuperA \== TA,
+      ( disjoint_types(SuperA, TB)
+      ; are_disjoint(SuperA, TB))
 
-    ;   subtype_of(TB, SuperB), SuperB \== TB,
-        (disjoint_types(SuperB, TA)
-        ; are_disjoint(SuperB, TA))).
+    ; subtype_of(TB, SuperB), SuperB \== TB,
+      ( disjoint_types(SuperB, TA)
+      ; are_disjoint(SuperB, TA))).
 ```
 
 The semicolons are left-justified, and separate subgoals into
