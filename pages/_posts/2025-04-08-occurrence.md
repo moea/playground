@@ -338,9 +338,10 @@ which means something like "commit".  It prevents the runtime from
 point at which the cut appears.  Here, it's used to ensure more
 general clauses for `normalize` (which appear after --- ordering
 matters) will never match a `union` even if there's some
-failure downstream.  We're never cutting for efficiency, only for
-semantics.  For the concrete types in the union --- `number`, `string`
---- the recursive call, via `maplist`, will trigger one such clause:
+goal/unification failure downstream.  We're never cutting for
+efficiency, only for semantics.  For the concrete types in the union
+--- `number`, `string` --- the recursive call, via `maplist`, will
+trigger one such clause:
 
 ```prolog
 normalize(Type, union([inter([Type])])) :-
