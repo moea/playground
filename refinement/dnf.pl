@@ -29,8 +29,7 @@ subtype_of(rational, number).
 
 subtype_of(neg(Super), neg(Sub)) :-
     Super \== Sub,
-    subtype_of(Sub, Super),
-    !.
+    subtype_of(Sub, Super).
 
 subtype_of(nil, _).
 subtype_of(_, any).

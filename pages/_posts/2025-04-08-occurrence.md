@@ -197,8 +197,7 @@ subtype_of(rational, number).
 
 subtype_of(neg(Super), neg(Sub)) :-
     Super \== Sub,
-    subtype_of(Sub, Super),
-    !.
+    subtype_of(Sub, Super).
 
 subtype_of(nil, _).
 subtype_of(_, any).
@@ -206,12 +205,11 @@ subtype_of(_, any).
 subtype_of(Sub, Super) :- Sub == Super.
 ```
 
-Don't worry about the bang/exclamation mark, if you don't know what it
-is, we'll get to it.  There'll be a separate subtyping predicate for
-DNF, but the compound terms will contain these type atoms as literals
---- `integer`, `rational`, etc. --- so this is where we ground our
-subtyping relation.  What looks like a predicate invocation in the
-argument positions for the negated type case (which you'll notice is
+There'll be a separate subtyping predicate for DNF, but the compound
+terms will contain these type atoms as literals --- `integer`,
+`rational`, etc. --- so this is where we ground our subtyping
+relation.  What looks like a predicate invocation in the argument
+positions for the negated type case (which you'll notice is
 [contravariant](https://en.wikipedia.org/wiki/Covariance_and_contravariance_(computer_science)))
 is pattern-matching.
 
