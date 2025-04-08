@@ -580,8 +580,8 @@ refine(PredExpr, InitialEnv, TrueEnv, FalseEnv) :-
 
 `=..` (or `univ`) destructures a functor, for the purpose of dynamic
 pattern matching, here, in the bit before the cut.  We're looking for
-something shaped like `integer_p(x)` `InitialEnv` will look like `[x:
-union([integer, string])]` (a dict literal), but with the types
+something shaped like `integer_p(x)`. `InitialEnv` will look like `[x:
+union([integer, string])]`, but with the types
 converted to DNF.
 
 This is where our choice to use a formulaic representation pays off.
