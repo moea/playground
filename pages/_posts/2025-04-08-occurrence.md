@@ -251,7 +251,7 @@ have to do a lot of the time[^7]).  So here, we're saying quite a bit:
 
 `SuperA` and `SuperB` are fresh variables, which'll be instantiated
 with every supertype of `TA` and then `TB` until one of subgoals are
-satisfied or the queries is exhausted.  Obviously we won't get the
+satisfied or the queries are exhausted.  Obviously we won't get the
 final subgoal if the second subgoal is satisfied. Fun!
 
 <a id="literals"></a>
