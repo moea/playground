@@ -511,7 +511,7 @@ union([inter([number]), inter([string])]) % union([number, string])
 ```
 
 I left out utility functions and so on, and some minor functionality,
-but that's about the long and short of it.
+but that's about the long and short of it.  The full source [is here](https://github.com/moea/playground/tree/main/refinement)
 
 
 <a id="refinement"></a>
@@ -667,7 +667,7 @@ That said, it's not at all clear to me how you would represent arrow
 types with it, as they cannot be decomposed into atoms.  I think a different
 representation would be required.  I will explore this further.
 
-Prolog was great fun!  I will definitely continue to use it in the future.
+Prolog was great fun!  I will definitely continue to use it in the future.  [Full source here](https://github.com/moea/playground/tree/main/refinement).
 
 [^1]: ON [UPPERCASE STRINGS](https://www.typescriptlang.org/docs/handbook/2/template-literal-types.html#uppercasestringtype) WITH AN APPLICATION TO THE [ENTSCHEIDUNGSPROBLEM](https://github.com/Microsoft/TypeScript/issues/14833).
 [^2]: Note that type refinement in this flow-dependent sense is not to be confused with [refinment types](https://en.wikipedia.org/wiki/Refinement_type), though they're related, and we'll implement a version of refinement types at the end of this article.
