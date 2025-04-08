@@ -53,7 +53,7 @@ test(deeper_nesting_same_var) :-
 
 A language so unpopular that [_Larry
 Wall_](https://en.wikipedia.org/wiki/Larry_Wall) mogged its file
-extension out of existence 40 years ago. I'm going to assume the reader
+extension out of existence decades ago. I'm going to assume the reader
 has heard vague murmurs about Prolog but can't necessarily read it ---
 though knows of its more
 distinguishing features, principally
