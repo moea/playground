@@ -311,7 +311,7 @@ You may find this section boring.  If you're only interested in the
 _goods_, the white Bronco, the _big show_ --- [**jump straight to type
 refinement**](#refinement), although this'll provide a helpful, if
 verbose, foundation --- that system can only function because the
-poperties we establish here.  If you already understand DNF, just
+properties we establish here.  If you already understand DNF, just
 skip it.
 
 Anyway, let's talk through what happens if we construct:
@@ -366,14 +366,13 @@ normalize(inter(Types), DNF) :- !,
 
 It has `integer` and `neg(float)` to deal with, in _its_ recursive
 calls.  The negation path for concrete types just puts the functor
-`neg(float)` into the literal slot in the DNF.  It otherwise swaps
+`neg(float)` into the literal slot in the DNF, like the `normalize(Type, ..)` clause above.  It otherwise swaps
 `any`/`nil` and applies [De Morgan's
 laws](https://en.wikipedia.org/wiki/De_Morgan%27s_laws) to
 `union`/`inter`.  `DNFs` will be a list of two top-level DNF forms:
 
 ```prolog
-[union([inter([integer])]),
- union([inter([neg(float)])])]
+[union([inter([integer])]), union([inter([neg(float)])])]
 ```
 
 Next, we _distribute conjunction over disjunction_, turning our
