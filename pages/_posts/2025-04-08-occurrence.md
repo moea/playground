@@ -487,8 +487,7 @@ absorb(Inters, IntersOut) :-
             (member(InterA, Inters),
              member(InterB, Inters),
              InterA \== InterB,
-             inter_subtype_of(InterA, InterB)
-            ),
+             inter_subtype_of(InterA, InterB)),
             AbsorbedInters),
     ord_subtract(Inters, AbsorbedInters, IntersOut).
 
@@ -524,9 +523,12 @@ predicate_type(integer_p, integer).
 ...
 ```
 
-For each basic type, there is a corresponding symbolic predicate, which, when
-applied, has the effect of refining the type of the tested variable depending on whether
-we're in true/false branch.  We're operating statically, solely in the type domain --- we don't evaluate anything.  `integer_p` is just an atom used in functors we can anayze, not a Prolog predicate.
+For each basic type, there is a corresponding symbolic predicate,
+which, when applied, has the effect of refining the type of the tested
+variable depending on whether we're in true/false branch.  We're
+operating statically, solely in the type domain --- we don't evaluate
+anything.  `integer_p` is just an atom used in functors we can anayze,
+not a Prolog predicate.
 
 One of the things we're going to have to do when refining types in
 expressions which contain `and`/`or` is perform set operations over
@@ -553,12 +555,14 @@ get_type(Var, Env, DNFType) :-
 
 Where `Operator` is one of `dnf:make_union` or `dnf:make_inter`, each
 of which is identical to the corresponding
-`construct(union(...))`/`(construct(inter(...))` clause.  **If this is confusing**, maybe you skipped [DNF Construction](#construction). `get_type`
-defaults to `any`.  `put_dict`, at this arity, takes a key, an input
-dict, a value, and an output dict.  Note going forward:
-dictionaries can have multiple associations per
-key.  Now, our main predicate, `refine` --- we're going to have to
-cover the predicate refinement case, before the logical operators.
+`construct(union(...))`/`(construct(inter(...))` clause.  **If this is
+confusing**, maybe you skipped [DNF
+Construction](#construction). `get_type` defaults to `any`.
+`put_dict`, at this arity, takes a key, an input dict, a value, and an
+output dict.  Note going forward: dictionaries can have multiple
+associations per key.  Now, our main predicate, `refine` --- we're
+going to have to cover the predicate refinement case, before the
+logical operators.
 
 ```prolog
 refine(PredExpr, InitialEnv, TrueEnv, FalseEnv) :-
